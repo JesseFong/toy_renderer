@@ -1538,7 +1538,7 @@ CameraTransform(v3 X, v3 Y, v3 Z, v3 P) {
     Result.Inverse = B;
     
     return Result;
-} 
+}
 
 inline m4x4_inv
 LookAt(v3 From, v3 To, v3 Up = V3(0, 1, 0)) {

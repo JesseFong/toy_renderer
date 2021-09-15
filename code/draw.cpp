@@ -71,74 +71,22 @@ struct frame_uniforms {
     u32 FramebufferTextureToDisplay;
 };
 
-struct shadowmap_shader {
-    u32 ID;
-    u32 DrawUniformsID;
-    u32 FrameUniformsID;
-    
-    platform_file_info VertInfo;
-    platform_file_info FragInfo;
-    b32 NoErrors;
-};
+GLuint DrawUniformBuffer;
+per_draw_uniforms* DrawUniformArray;
+framebuffer GBufferFramebuffer;
 
-struct resolve_shader {
-    u32 ID;
-    
-    u32 GAlbedoID;
-    u32 GNormalID;
-    u32 GRoughnessID;
-    u32 GPositionID;
-    u32 GDepthID;
-    u32 GShadowedID;
-    
-    u32 FrameUniformsID;
-    
-    platform_file_info VertInfo;
-    platform_file_info FragInfo;
-    b32 NoErrors;
-};
+GLuint FrameUniformBuffer;
+frame_uniforms FrameUniforms;
 
+framebuffer ResolveFramebuffer;
 
-struct gbuffer_shader  {
-    u32 ID;
-    
-    u32 TextureArrayID;
-    u32 FrameUniformsID;
-    u32 DrawUniformsID;
-    u32 ShadowmapID;
-    
-    u32 LightProjID;
-    
-#define MAX_BINDINGS 32
-    GLuint Bindings[MAX_BINDINGS];
-    platform_file_info VertInfo;
-    platform_file_info FragInfo;
-    b32 NoErrors;
-};
+framebuffer ShadowmapFramebuffer;
 
-global_variable gbuffer_shader GBufferShader;
-global_variable GLuint DrawUniformBuffer;
-global_variable per_draw_uniforms* DrawUniformArray;
-global_variable framebuffer GBufferFramebuffer;
+shader GBufferShader = {};
+shader ResolveShader = {};
+shader ShadowmapShader = {};
+shader SkyboxShader = {};
 
-global_variable GLuint FrameUniformBuffer;
-global_variable frame_uniforms FrameUniforms;
-
-global_variable resolve_shader ResolveShader;
-global_variable framebuffer ResolveFramebuffer;
-global_variable GLuint FullScreenVAO;
-global_variable GLuint FullScreenVBO;
-
-global_variable shadowmap_shader ShadowmapShader;
-global_variable framebuffer ShadowmapFramebuffer;
-
-
-
-static void
-BindAllUniforms() {
-    
-    
-}
 
 static m4x4_inv
 GenerateDirectionLightProj(directional_light Light) {
@@ -213,239 +161,35 @@ UpdateCamera(camera* Camera) {
     return(Result);
 }
 
-static shadowmap_shader 
-LoadShadowmapShader(app_memory* Memory) {
-    shadowmap_shader Shader;
-    
-    platform_file_info HeaderInfo = PlatformOpenFile("gl_shaders/header.h");
-    char* HeaderSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, HeaderInfo.FileSize);
-    PlatformReadFile(&HeaderInfo, HeaderInfo.FileSize, (void*)HeaderSource);
-    PlatformCloseFile(&HeaderInfo);
-    
-    platform_file_info FrameUniformsInfo = PlatformOpenFile("gl_shaders/shader_frame_uniforms.h");
-    char* FrameUniformsSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, FrameUniformsInfo.FileSize);
-    PlatformReadFile(&FrameUniformsInfo, FrameUniformsInfo.FileSize, (void*)FrameUniformsSource);
-    PlatformCloseFile(&FrameUniformsInfo);
-    
-    platform_file_info DrawUniformsInfo = PlatformOpenFile("gl_shaders/shader_draw_uniforms.h");
-    char* DrawUniformsSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, DrawUniformsInfo.FileSize);
-    PlatformReadFile(&DrawUniformsInfo, DrawUniformsInfo.FileSize, (void*)DrawUniformsSource);
-    PlatformCloseFile(&DrawUniformsInfo);
-    
-    platform_file_info VertInfo = PlatformOpenFile("gl_shaders/shadowmap.vert");
-    char* VertSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, VertInfo.FileSize);
-    PlatformReadFile(&VertInfo, VertInfo.FileSize, (void*)VertSource);
-    PlatformCloseFile(&VertInfo);
-    
-    platform_file_info FragInfo = PlatformOpenFile("gl_shaders/shadowmap.frag"); 
-    char* FragSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, FragInfo.FileSize);
-    PlatformReadFile(&FragInfo, FragInfo.FileSize, (void*)FragSource);
-    PlatformCloseFile(&FragInfo);
-    
-    char* VertSourceArray[4] = {
-        HeaderSource,
-        FrameUniformsSource,
-        DrawUniformsSource,
-        VertSource,
-    };
-    
-    char* FragSourceArray[4] = {
-        HeaderSource,
-        FrameUniformsSource,
-        DrawUniformsSource,
-        FragSource,
-    };
-    
-    Shader.VertInfo = VertInfo;
-    Shader.FragInfo = FragInfo;
-    Shader.NoErrors = true;
-    Shader.ID = CompileShader(ArrayCount(VertSourceArray), &(GLchar*)VertSourceArray[0], ArrayCount(FragSourceArray), &(GLchar*)FragSourceArray[0], &Shader.NoErrors); 
-    Shader.FrameUniformsID = glGetUniformBlockIndex(Shader.ID, "FrameUniforms");
-    Shader.DrawUniformsID = glGetProgramResourceIndex(Shader.ID, GL_SHADER_STORAGE_BLOCK, "DrawUniforms");
-    
-    return Shader;
-}
-
-static resolve_shader
-LoadResolveShader(app_memory* Memory) {
-    resolve_shader Shader;
-    
-    platform_file_info HeaderInfo = PlatformOpenFile("gl_shaders/header.h");
-    char* HeaderSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, HeaderInfo.FileSize);
-    PlatformReadFile(&HeaderInfo, HeaderInfo.FileSize, (void*)HeaderSource);
-    PlatformCloseFile(&HeaderInfo);
-    
-    platform_file_info FrameUniformsInfo = PlatformOpenFile("gl_shaders/shader_frame_uniforms.h");
-    char* FrameUniformsSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, FrameUniformsInfo.FileSize);
-    PlatformReadFile(&FrameUniformsInfo, FrameUniformsInfo.FileSize, (void*)FrameUniformsSource);
-    PlatformCloseFile(&FrameUniformsInfo);
-    
-    platform_file_info VertInfo = PlatformOpenFile("gl_shaders/resolve.vert");
-    char* VertSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, VertInfo.FileSize);
-    PlatformReadFile(&VertInfo, VertInfo.FileSize, (void*)VertSource);
-    PlatformCloseFile(&VertInfo);
-    
-    platform_file_info FragInfo = PlatformOpenFile("gl_shaders/resolve.frag"); 
-    char* FragSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, FragInfo.FileSize);
-    PlatformReadFile(&FragInfo, FragInfo.FileSize, (void*)FragSource);
-    PlatformCloseFile(&FragInfo);
-    
-    char* VertSourceArray[2] = {
-        HeaderSource,
-        VertSource,
-    };
-    
-    char* FragSourceArray[3] = {
-        HeaderSource,
-        FrameUniformsSource,
-        FragSource,
-    };
-    
-    Shader.VertInfo = VertInfo;
-    Shader.FragInfo = FragInfo;
-    Shader.NoErrors = true;
-    Shader.ID = CompileShader(ArrayCount(VertSourceArray), &(GLchar*)VertSourceArray[0], ArrayCount(FragSourceArray), &(GLchar*)FragSourceArray[0], &Shader.NoErrors); 
-    Shader.GAlbedoID = GL_TEXTURE0;
-    Shader.GNormalID = GL_TEXTURE1;
-    Shader.GRoughnessID = GL_TEXTURE2;
-    Shader.GPositionID = GL_TEXTURE3;
-    Shader.GDepthID = GL_TEXTURE4;
-    Shader.GShadowedID = GL_TEXTURE5;
-    Shader.FrameUniformsID = glGetUniformBlockIndex(Shader.ID, "FrameUniforms");
-    
-    return Shader;
-    
-}
-
-static gbuffer_shader
-LoadGBufferShader(app_memory* Memory) {
-    
-    gbuffer_shader Shader = {};
-    
-    platform_file_info HeaderInfo = PlatformOpenFile("gl_shaders/header.h");
-    char* HeaderSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, HeaderInfo.FileSize);
-    PlatformReadFile(&HeaderInfo, HeaderInfo.FileSize, (void*)HeaderSource);
-    PlatformCloseFile(&HeaderInfo);
-    
-    platform_file_info FrameUniformsInfo = PlatformOpenFile("gl_shaders/shader_frame_uniforms.h");
-    char* FrameUniformsSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, FrameUniformsInfo.FileSize);
-    PlatformReadFile(&FrameUniformsInfo, FrameUniformsInfo.FileSize, (void*)FrameUniformsSource);
-    PlatformCloseFile(&FrameUniformsInfo);
-    
-    platform_file_info DrawUniformsInfo = PlatformOpenFile("gl_shaders/shader_draw_uniforms.h");
-    char* DrawUniformsSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, DrawUniformsInfo.FileSize);
-    PlatformReadFile(&DrawUniformsInfo, DrawUniformsInfo.FileSize, (void*)DrawUniformsSource);
-    PlatformCloseFile(&DrawUniformsInfo);
-    
-    platform_file_info VertInfo = PlatformOpenFile("gl_shaders/shader.vert");
-    char* VertSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, VertInfo.FileSize);
-    PlatformReadFile(&VertInfo, VertInfo.FileSize, (void*)VertSource);
-    PlatformCloseFile(&VertInfo);
-    
-    platform_file_info FragInfo = PlatformOpenFile("gl_shaders/shader.frag"); 
-    char* FragSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, FragInfo.FileSize);
-    PlatformReadFile(&FragInfo, FragInfo.FileSize, (void*)FragSource);
-    PlatformCloseFile(&FragInfo);
-    
-    char* VertSourceArray[4] = {
-        HeaderSource,
-        FrameUniformsSource,
-        DrawUniformsSource,
-        VertSource,
-    };
-    
-    char* FragSourceArray[4] = {
-        HeaderSource,
-        FrameUniformsSource,
-        DrawUniformsSource,
-        FragSource,
-    };
-    
-    Shader.VertInfo = VertInfo;
-    Shader.FragInfo = FragInfo;
-    Shader.NoErrors = true;
-    Shader.ID = CompileShader(ArrayCount(VertSourceArray), &(GLchar*)VertSourceArray[0], ArrayCount(FragSourceArray), &(GLchar*)FragSourceArray[0], &Shader.NoErrors);
-    Shader.TextureArrayID = glGetUniformBlockIndex(Shader.ID, "TextureArray");
-    Shader.FrameUniformsID = glGetUniformBlockIndex(Shader.ID, "FrameUniforms");
-    Shader.DrawUniformsID = glGetProgramResourceIndex(Shader.ID, GL_SHADER_STORAGE_BLOCK, "DrawUniforms");
-    Shader.LightProjID = glGetUniformLocation(Shader.ID, "LightProj");
-    Shader.ShadowmapID = GL_TEXTURE0;
-    
-    return Shader;
-}
-
-static b32
-ShouldShadersReload() {
-    b32 Result = false;
-    
-    platform_file_info TestVertInfo = PlatformOpenFile("gl_shaders/shader.vert");
-    platform_file_info TestFragInfo = PlatformOpenFile("gl_shaders/shader.frag");
-    
-    u64 VertFileTime = TestVertInfo.FileTime;
-    u64 FragFileTime = TestFragInfo.FileTime;
-    
-    if((VertFileTime != GBufferShader.VertInfo.FileTime) || (FragFileTime != GBufferShader.FragInfo.FileTime)) {
-        Result = true;
-    }
-    PlatformCloseFile(&TestVertInfo);
-    PlatformCloseFile(&TestFragInfo);
-    
-    TestVertInfo = PlatformOpenFile("gl_shaders/resolve.vert");
-    TestFragInfo = PlatformOpenFile("gl_shaders/resolve.frag");
-    
-    VertFileTime = TestVertInfo.FileTime;
-    FragFileTime = TestFragInfo.FileTime;
-    
-    if((VertFileTime != ResolveShader.VertInfo.FileTime) || (FragFileTime != ResolveShader.FragInfo.FileTime)) {
-        Result = true;
-    }
-    PlatformCloseFile(&TestVertInfo);
-    PlatformCloseFile(&TestFragInfo);
-    
-    
-    TestVertInfo = PlatformOpenFile("gl_shaders/shadowmap.vert");
-    TestFragInfo = PlatformOpenFile("gl_shaders/shadowmap.frag");
-    
-    VertFileTime = TestVertInfo.FileTime;
-    FragFileTime = TestFragInfo.FileTime;
-    
-    if((VertFileTime != ResolveShader.VertInfo.FileTime) || (FragFileTime != ResolveShader.FragInfo.FileTime)) {
-        Result = true;
-    }
-    PlatformCloseFile(&TestVertInfo);
-    PlatformCloseFile(&TestFragInfo);
-    
-    return Result;
-}
-
-static void
-ReloadShaders(app_memory* Memory) {
-    
-    gbuffer_shader TempGBufferShader = LoadGBufferShader(Memory);
-    if(TempGBufferShader.NoErrors) {
-        FreeShader(&GBufferShader.ID);
-        GBufferShader = TempGBufferShader;
-    }
-    
-    resolve_shader TempResolveShader = LoadResolveShader(Memory);
-    if(TempResolveShader.NoErrors) {
-        FreeShader(&ResolveShader.ID);
-        ResolveShader = TempResolveShader;
-    } 
-    
-    
-    shadowmap_shader TempShadowmapShader = LoadShadowmapShader(Memory);
-    if(TempShadowmapShader.NoErrors) {
-        FreeShader(&ShadowmapShader.ID);
-        ShadowmapShader = TempShadowmapShader;
-    } 
-    
-}
-
-
 static void
 LoadModel(app_memory* Memory) {
     Memory->Scene.LoadedModel = LoadGLTF();
+}
+
+static void
+LoadSkybox(app_memory* Memory) {
+    gltf_texture SkyboxImages[6] = {};
+    
+    stbi_set_flip_vertically_on_load(true);
+    
+    SkyboxImages[0] = LoadGLTFImageFromFile("skybox/right.jpg");
+    SkyboxImages[1] = LoadGLTFImageFromFile("skybox/left.jpg");
+    SkyboxImages[2] = LoadGLTFImageFromFile("skybox/top.jpg");
+    SkyboxImages[3] = LoadGLTFImageFromFile("skybox/bottom.jpg");
+    SkyboxImages[4] = LoadGLTFImageFromFile("skybox/front.jpg");
+    SkyboxImages[5] = LoadGLTFImageFromFile("skybox/back.jpg");
+    
+    u8* DataArray[6] = {};
+    DataArray[0] = SkyboxImages[0].Data;
+    DataArray[1] = SkyboxImages[1].Data;
+    DataArray[2] = SkyboxImages[2].Data;
+    DataArray[3] = SkyboxImages[3].Data;
+    DataArray[4] = SkyboxImages[4].Data;
+    DataArray[5] = SkyboxImages[5].Data;
+    
+    Memory->Scene.SkyboxID = RegisterCubemap(DataArray, SkyboxImages[0].Width, SkyboxImages[0].Height, GL_RGB8);
+    
+    stbi_set_flip_vertically_on_load(false);
 }
 
 static void
@@ -518,8 +262,10 @@ InitializeScene(app_memory* Memory) {
     EndFramebufferCreation(&ResolveFramebuffer);
     
     
-    Memory->Scene.GeneratedMeshArray[Memory->Scene.GeneratedMeshCount++] = GenerateSphere(1);
-    Memory->Scene.GeneratedMeshID = RegisterGeneratedMesh(&Memory->Scene.GeneratedMeshArray[0]);
+    generated_mesh SphereMesh = GenerateSphere(1);
+    Memory->Scene.GeneratedSphereID = RegisterGeneratedMesh(&SphereMesh);
+    generated_mesh CubeMesh = GenerateTessellatedCube(1);
+    Memory->Scene.GeneratedCubeID = RegisterGeneratedMesh(&CubeMesh);
     
     ShadowmapFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
     AddFramebufferDepthTexture(&ShadowmapFramebuffer, GL_DEPTH_COMPONENT16);
@@ -529,19 +275,26 @@ InitializeScene(app_memory* Memory) {
     Scene->IsInitialized = true;
 }
 
+
 static void
 UpdateAndRender(app_memory* Memory) {
     
     if(!Memory->Scene.IsInitialized) {
-        FreeShader(&GBufferShader.ID);
-        ReloadShaders(Memory);
         LoadModel(Memory);
+        LoadSkybox(Memory);
         InitializeScene(Memory);
+        
+        GBufferShader = LoadShader(Memory, "gl_shaders/shader.vert", "gl_shaders/shader.frag", 0);
+        ResolveShader = LoadShader(Memory, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
+        ShadowmapShader = LoadShader(Memory, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
+        SkyboxShader = LoadShader(Memory, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
+        
     }
     
-    if(ShouldShadersReload()) {
-        ReloadShaders(Memory);
-    }
+    MaybeReloadShader(Memory, &GBufferShader, "gl_shaders/shader.vert", "gl_shaders/shader.frag", 0);
+    MaybeReloadShader(Memory, &ResolveShader, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
+    MaybeReloadShader(Memory, &ShadowmapShader, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
+    MaybeReloadShader(Memory, &SkyboxShader, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
     
     UpdateCamera(&Memory->Scene.Camera);
     OpenGL->IndirectCommandsCount = 0;
@@ -594,7 +347,7 @@ UpdateAndRender(app_memory* Memory) {
         
         DrawUniformArray[OpenGL->IndirectCommandsCount] = DrawUniform;
         
-        u32 MeshID = Memory->Scene.GeneratedMeshID;
+        u32 MeshID = Memory->Scene.GeneratedSphereID;
         OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
         OpenGL->IndirectCommandsCount++;
         
@@ -628,7 +381,7 @@ UpdateAndRender(app_memory* Memory) {
             
             DrawUniformArray[OpenGL->IndirectCommandsCount] = DrawUniform;
             
-            u32 MeshID = Memory->Scene.GeneratedMeshID;
+            u32 MeshID = Memory->Scene.GeneratedSphereID;
             OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
             OpenGL->IndirectCommandsCount++;
             
@@ -689,7 +442,8 @@ UpdateAndRender(app_memory* Memory) {
     
     
     {
-        glUseProgram(ShadowmapShader.ID);
+        GLuint Shader = ShadowmapShader.ID;
+        glUseProgram(Shader);
         
         glBindFramebuffer(GL_FRAMEBUFFER, ShadowmapFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
@@ -698,18 +452,20 @@ UpdateAndRender(app_memory* Memory) {
         
         glBindVertexArray(OpenGL->ModelGeometryInfo.VAO);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, ShadowmapShader.FrameUniformsID, FrameUniformBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), FrameUniformBuffer);
         
         u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
         //glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, ShadowmapShader.DrawUniformsID, DrawUniformBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), DrawUniformBuffer);
         
         glBufferData(GL_DRAW_INDIRECT_BUFFER, TotalDrawCount*sizeof(draw_element_indirect_command), OpenGL->IndirectCommands, GL_DYNAMIC_DRAW);
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
     }
     
     {
-        glUseProgram(GBufferShader.ID);
+        GLuint Shader = GBufferShader.ID;
+        
+        glUseProgram(Shader);
         
         glBindFramebuffer(GL_FRAMEBUFFER, GBufferFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
@@ -718,18 +474,18 @@ UpdateAndRender(app_memory* Memory) {
         
         glBindVertexArray(OpenGL->ModelGeometryInfo.VAO);
         
-        glActiveTexture(GBufferShader.ShadowmapID);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, ShadowmapFramebuffer.DepthTarget);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, GBufferShader.TextureArrayID, OpenGL->TextureBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "TextureArray"), OpenGL->TextureBuffer);
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, OpenGL->IndirectCommandBuffer);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, GBufferShader.FrameUniformsID, FrameUniformBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), FrameUniformBuffer);
         
         u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
         
         glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, GBufferShader.DrawUniformsID, DrawUniformBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), DrawUniformBuffer);
         
         glBufferData(GL_DRAW_INDIRECT_BUFFER, TotalDrawCount*sizeof(draw_element_indirect_command), OpenGL->IndirectCommands, GL_DYNAMIC_DRAW);
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
@@ -737,24 +493,58 @@ UpdateAndRender(app_memory* Memory) {
     
     
     {
-        glUseProgram(ResolveShader.ID);
+        
+        
+        glBindFramebuffer(GL_FRAMEBUFFER, ResolveFramebuffer.ID);
+        glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
+        glScissor(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
+        
+        GLuint Shader = SkyboxShader.ID;
+        glDisable(GL_CULL_FACE);
+        glUseProgram(Shader);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        
+        glBindVertexArray(OpenGL->CubemapVAO);
+        
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, Memory->Scene.SkyboxID);
+        
+        f32 AspectWidthOverHeight = (f32)OpenGL->RenderWidth/(f32)OpenGL->RenderHeight;
+        
+        camera* Camera = &Memory->Scene.Camera;
+        m4x4_inv SkyboxProj = PerspectiveProjection(AspectWidthOverHeight, Camera->FOV, Camera->NearClip, Camera->FarClip);
+        m4x4_inv SkyboxXForm = CameraTransform(Camera->XAxis, Camera->YAxis, Camera->ZAxis, V3(0, 0, 0));
+        
+        m4x4 FinalSkyboxProj = SkyboxProj.Forward * SkyboxXForm.Forward;
+        
+        glUniformMatrix4fv(glGetUniformLocation(Shader, "Proj"), 1, GL_TRUE, (GLfloat*)&FinalSkyboxProj);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+        glEnable(GL_CULL_FACE);
+        
+    }
+    
+    
+    {
+        GLuint Shader = ResolveShader.ID;
+        
+        glUseProgram(Shader);
         glBindVertexArray(OpenGL->FullscreenVAO);
         glBindFramebuffer(GL_FRAMEBUFFER, ResolveFramebuffer.ID);
         
-        glActiveTexture(ResolveShader.GAlbedoID);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[0]);
-        glActiveTexture(ResolveShader.GNormalID);
+        glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[1]);
-        glActiveTexture(ResolveShader.GRoughnessID);
+        glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[2]);
-        glActiveTexture(ResolveShader.GPositionID);
+        glActiveTexture(GL_TEXTURE3);
         glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[4]);
-        glActiveTexture(ResolveShader.GDepthID);
+        glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.DepthTarget);
-        glActiveTexture(ResolveShader.GShadowedID);
+        glActiveTexture(GL_TEXTURE5);
         glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[3]);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, ResolveShader.FrameUniformsID, FrameUniformBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), FrameUniformBuffer);
         
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         

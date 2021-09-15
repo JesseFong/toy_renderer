@@ -76,7 +76,7 @@ GL_DEBUG_CALLBACK(OpenGLDebugMessageCallback) {
     //DebugOut(Out);
 }
 
-global_variable f32 GlobalScreenQuadVertices[] = {
+global_variable f32 GLOBALScreenQuadVertices[] = {
     // positions        // texture Coords
     -1.0f, -1.0f, 0.0f, 0.0f, 0.0f,
     -1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
@@ -84,7 +84,7 @@ global_variable f32 GlobalScreenQuadVertices[] = {
     1.0f,  1.0f, 0.0f, 1.0f, 1.0f,
 };
 
-global_variable f32 SkyboxVertices[] = {
+global_variable f32 GLOBALCubemapVertices[] = {
     // positions          
     -1.0f,  1.0f, -1.0f,
     -1.0f, -1.0f, -1.0f,
@@ -182,8 +182,12 @@ struct open_gl {
     GLuint TextureBuffer;
     
     model_geometry_info ModelGeometryInfo;
+    
     GLuint FullscreenVAO;
     GLuint FullscreenVBO;
+    
+    GLuint CubemapVAO;
+    GLuint CubemapVBO;
     
 #define MAX_REGISTERED_MESH_COUNT 1024
     registered_mesh RegisteredMeshArray[MAX_REGISTERED_MESH_COUNT];
@@ -220,12 +224,6 @@ GenerateIndirectDrawCommand(u32 MeshID, u32 InstanceCount) {
     IndirectCommand.BaseInstance = OpenGL->IndirectCommandsCount;
     
     return IndirectCommand;
-}
-
-static void
-FreeShader(GLuint* Handle) {
-    glDeleteProgram(*Handle);
-    *Handle = 0;
 }
 
 static GLuint
@@ -540,12 +538,28 @@ InitializeFullScreenGeometry() {
     
     glCreateBuffers(1, &OpenGL->FullscreenVBO);
     glBindBuffer(GL_ARRAY_BUFFER, OpenGL->FullscreenVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(GlobalScreenQuadVertices), &GlobalScreenQuadVertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(GLOBALScreenQuadVertices), &GLOBALScreenQuadVertices, GL_STATIC_DRAW);
     
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(f32), 0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(f32), (void*)(sizeof(f32)*3));
+    
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+static void
+InitializeCubemapGeometry() {
+    glCreateVertexArrays(1, &OpenGL->CubemapVAO);
+    glBindVertexArray(OpenGL->CubemapVAO);
+    
+    glCreateBuffers(1, &OpenGL->CubemapVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->CubemapVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(GLOBALCubemapVertices), &GLOBALCubemapVertices, GL_STATIC_DRAW);
+    
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(f32), 0);
     
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -585,6 +599,7 @@ InitializeOpenGL() {
     
     InitializeStandardGeometry(MAX_VERTEX_COUNT);
     InitializeFullScreenGeometry();
+    InitializeCubemapGeometry();
     
     u8 WhiteBitmapData[4];
     WhiteBitmapData[0] = 255;
@@ -600,6 +615,6 @@ InitializeOpenGL() {
     RegisterTexture(WhiteTexture);
     
     
-    v4 ClearColor = V4(1, 1, 0, 1);
+    v4 ClearColor = V4(1, 1, 1, 0);
     glClearColor(ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a);
 }

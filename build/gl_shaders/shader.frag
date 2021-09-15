@@ -1,4 +1,24 @@
 
+layout(std140, row_major, binding=0)uniform FrameUniforms 
+{
+    mat4 CameraProj;
+    mat4 LightProj;
+    point_light PointLight[4];
+    directional_light SunLight;
+    vec3 CameraP;
+    uint FrambufferTextureToDisplay;
+};
+
+layout(binding=1)uniform TextureArray 
+{
+    uint64_t Textures[1024]; 
+};
+
+layout(std430, row_major) buffer DrawUniforms
+{
+    draw_uniform DrawUniformArray[];
+};
+
 layout(location=0) out vec4 OutColor;
 layout(location=1) out vec4 OutNormal;
 layout(location=2) out vec4 OutRoughness;

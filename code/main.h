@@ -8,10 +8,10 @@ struct scene {
     b32 IsInitialized;
     gltf_model LoadedModel;
     
-#define MAX_GENERATED_MESH_COUNT 32
-    generated_mesh GeneratedMeshArray[MAX_GENERATED_MESH_COUNT];
-    u32 GeneratedMeshCount;
-    u32 GeneratedMeshID;
+    u32 SkyboxID;
+    
+    u32 GeneratedSphereID;
+    u32 GeneratedCubeID;
     
     camera Camera;
     

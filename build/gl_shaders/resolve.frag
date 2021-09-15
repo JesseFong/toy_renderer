@@ -1,4 +1,14 @@
 
+layout(std140, row_major, binding=0)uniform FrameUniforms 
+{
+    mat4 CameraProj;
+    mat4 LightProj;
+    point_light PointLight[4];
+    directional_light SunLight;
+    vec3 CameraP;
+    uint FrambufferTextureToDisplay;
+};
+
 layout(binding = 0)uniform sampler2D InGAlbedo;
 layout(binding = 1)uniform sampler2D InGNormal;
 layout(binding = 2)uniform sampler2D InGRoughness;
@@ -117,7 +127,12 @@ vec3 ApplyGamma(vec3 Color, float Gamma) {
 void main()
 {
     
-    vec3 Albedo = texture(InGAlbedo, UV).rgb;
+    vec4 FullAlbedo = texture(InGAlbedo, UV);
+    
+    if(FullAlbedo.a < 0.5) {
+        discard;
+    }
+    vec3 Albedo = FullAlbedo.rgb;
     vec3 Normal = texture(InGNormal, UV).rgb;
     vec3 RoughnessMetallic = texture(InGRoughness, UV).rgb;
     vec3 FragPosition = texture(InGPosition, UV).rgb;

@@ -7,6 +7,7 @@
 #include "gltf_loader.h"
 #include "camera.h"
 #include "main.h"
+#include "shader.h"
 #include "opengl.cpp"
 #include "draw.cpp"
 

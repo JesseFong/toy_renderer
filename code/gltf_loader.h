@@ -630,12 +630,12 @@ LoadGLTF(gltf_loader_settings* Settings = NULL) {
     
     //LOADER_GET_CURRENT_DIRECTORY(512, &GLTFCurrentDirectory[0]);
     
-    char* SponzaDirectory = "GLTFSamples/Sponza/glTF";
+    char* SponzaDirectory = "Sponza/glTF";
     
     strcpy(GLTFCurrentDirectory, SponzaDirectory);
     
     gltf_model Result = {};
-    char* Filename = "GLTFSamples/Sponza/glTF/Sponza.gltf";
+    char* Filename = "Sponza/glTF/Sponza.gltf";
     cgltf_options options = {0};
     cgltf_data* data = NULL;
     cgltf_result result = cgltf_parse_file(&options, Filename, &data);
