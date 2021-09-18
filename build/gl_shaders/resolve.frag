@@ -9,12 +9,14 @@ layout(std140, row_major, binding=0)uniform FrameUniforms
     uint FrambufferTextureToDisplay;
 };
 
+
 layout(binding = 0)uniform sampler2D InGAlbedo;
 layout(binding = 1)uniform sampler2D InGNormal;
 layout(binding = 2)uniform sampler2D InGRoughness;
-layout(binding = 3)uniform sampler2D InGPosition;
-layout(binding = 4)uniform sampler2D InDepthBuffer;
-layout(binding = 5)uniform sampler2D InShadowed;
+layout(binding = 3)uniform sampler2D InShadowed;
+layout(binding = 4)uniform sampler2D InGPosition;
+layout(binding = 5)uniform sampler2D InPointLightDepth;
+layout(binding = 6)uniform sampler2D InDepthBuffer;
 
 layout(location=0) out vec4 OutColor;
 
@@ -81,7 +83,7 @@ float GeometrySmith(vec3 Normal, vec3 ViewDirection, vec3 LightDirection, float 
 
 vec3 FresnelSchlick(vec3 H, vec3 V, vec3 F0) {
     float HV = max(dot(H, V), 0.0);
-    HV = min(HV, 1.0);
+    //HV = min(HV, 1.0);
     return F0 + (1.0 - F0) * pow(clamp(1.0 - HV, 0.0, 1.0), 5.0);
 }
 
@@ -138,10 +140,11 @@ void main()
     vec3 FragPosition = texture(InGPosition, UV).rgb;
     float Depth = texture(InDepthBuffer, UV).r;
     float Shadowed = texture(InShadowed, UV).r;
+    float DepthVis = texture(InPointLightDepth, UV).r; 
     
     
     vec3 N = normalize(Normal);
-    vec3 V = normalize(CameraP - FragPosition);
+    vec3 V = normalize(CameraP  - FragPosition);
     
     float Roughness = RoughnessMetallic.g;
     float Metallic = RoughnessMetallic.b;
@@ -165,7 +168,6 @@ void main()
         
         float D = DistributionGGX(N, H, clamp(Roughness, 0.0, 1.0));
         float G = GeometrySmith(N, V, L, Roughness);
-        
         vec3 F = FresnelSchlick(H, V, F0);
         
         vec3 KS = F;
@@ -174,14 +176,15 @@ void main()
         
         vec3 Numerator = D*G*F;
         float Denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-        
         vec3 Specular = Numerator / Denominator;
         
         float NL = max(dot(N, L), 0.0);
         PointLightContribution += (KD * Albedo / PI32 + Specular) * Radiance * NL;
     }
     
-#if 1
+    PointLightContribution = PointLightContribution * (1 - Shadowed);
+    
+#if 0
     //Sun LightContribution
     if(Shadowed > 0.0) {
         PointLightContribution += vec3(0.0);
@@ -215,5 +218,6 @@ void main()
     vec3 Ambient = vec3(0.03) * Albedo;
     vec3 FinalColor = Ambient + PointLightContribution;
     FinalColor = ApplyGamma(FinalColor, 2.2);
-    OutColor = vec4(FinalColor, 1);
+    OutColor = vec4(vec3(FinalColor), 1);
+    
 }

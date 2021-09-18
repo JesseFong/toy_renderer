@@ -71,9 +71,9 @@ GL_DEBUG_CALLBACK(OpenGLDebugMessageCallback) {
         case GL_DEBUG_SEVERITY_NOTIFICATION:_Severity = "NOTIFICATION";break;
         default:_Severity = "UNKNOWN";break;
     }
-    //char* Out = FormatString("%d: %s of %s severity, raised from %s: %s\n",
-    //ID, _Type, _Severity, _Source, Message);
-    //DebugOut(Out);
+    char* Out = FormatString("%d: %s of %s severity, raised from %s: %s\n",
+                             ID, _Type, _Severity, _Source, Message);
+    DebugOut(Out);
 }
 
 global_variable f32 GLOBALScreenQuadVertices[] = {
@@ -174,57 +174,11 @@ struct draw_element_indirect_command {
     u32 BaseInstance;
 };
 
-struct open_gl {
-    u32 RenderWidth;
-    u32 RenderHeight; 
-    
-    GLuint DrawIDBuffer;
-    GLuint TextureBuffer;
-    
-    model_geometry_info ModelGeometryInfo;
-    
-    GLuint FullscreenVAO;
-    GLuint FullscreenVBO;
-    
-    GLuint CubemapVAO;
-    GLuint CubemapVBO;
-    
-#define MAX_REGISTERED_MESH_COUNT 1024
-    registered_mesh RegisteredMeshArray[MAX_REGISTERED_MESH_COUNT];
-    u32 RegisteredMeshCount;
-    
-#define MAX_TEXTURE_COUNT 1024
-    u64 TextureShaderHandleArray[MAX_TEXTURE_COUNT];
-    u32 RegisteredTextureCount;
-    
-#define MAX_DRAW_ELEMENTS_INDIRECT_COMMANDS 65536
-    GLuint IndirectCommandBuffer;
-    draw_element_indirect_command IndirectCommands[MAX_DRAW_ELEMENTS_INDIRECT_COMMANDS];
-    u32 IndirectCommandsCount;
-    
-};
-
-open_gl* OpenGL;
-
 //
 //
 //
 //
 
-static draw_element_indirect_command
-GenerateIndirectDrawCommand(u32 MeshID, u32 InstanceCount) {
-    
-    registered_mesh* Mesh = &OpenGL->RegisteredMeshArray[MeshID];
-    
-    draw_element_indirect_command IndirectCommand;
-    IndirectCommand.Count = Mesh->IndexCount;
-    IndirectCommand.InstanceCount = 1;
-    IndirectCommand.FirstIndex = Mesh->BaseIndex;
-    IndirectCommand.BaseVertex = Mesh->BaseVertex;
-    IndirectCommand.BaseInstance = OpenGL->IndirectCommandsCount;
-    
-    return IndirectCommand;
-}
 
 static GLuint
 CompileShader(u32 VertSourceCount, GLchar** VertSource, u32 FragSourceCount, GLchar** FragSource, b32* NoError) {
@@ -305,13 +259,12 @@ InternalFormatToFormat(GLenum InternalFormat) {
 }
 
 static GLuint
-CreateTexture(u32 Width, u32 Height, GLenum InternalFormat, u8* Data) {
+CreateFramebufferTexture(u32 Width, u32 Height, GLenum InternalFormat) {
     GLenum Format = InternalFormatToFormat(InternalFormat);
-    
     GLuint ID;
     glCreateTextures(GL_TEXTURE_2D, 1, &ID);
     
-    GLenum Filter = GL_LINEAR;
+    GLenum Filter = GL_NEAREST;
     GLenum WrapFilter = GL_REPEAT;
     
     glTextureParameteri(ID, GL_TEXTURE_WRAP_S, WrapFilter);
@@ -321,16 +274,47 @@ CreateTexture(u32 Width, u32 Height, GLenum InternalFormat, u8* Data) {
     glGenerateTextureMipmap(ID);
     
     glTextureStorage2D(ID, 1, InternalFormat, Width, Height);
-    if(Data) {
-        glTextureSubImage2D(ID, 0, 0, 0, Width, Height, Format, GL_UNSIGNED_BYTE, Data);
-    }
     
+    return ID;
+}
+
+static GLuint
+CreateDepthTexture(u32 Width, u32 Height, GLenum InternalFormat) {
+    GLenum Format = InternalFormatToFormat(InternalFormat);
+    GLuint ID;
+    glCreateTextures(GL_TEXTURE_2D, 1, &ID);
+    
+    glTextureParameteri(ID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(ID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(ID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenerateTextureMipmap(ID);
+    
+    glTextureStorage2D(ID, 1, InternalFormat, Width, Height);
+    return ID;
+}
+
+static GLuint
+CreateDepthCubemapTexture(u32 Width, u32 Height, GLenum InternalFormat) {
+    
+    GLenum Format = InternalFormatToFormat(InternalFormat);
+    
+    GLuint ID;
+    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &ID);
+    
+    glTextureParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(ID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTextureParameteri(ID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(ID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(ID, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    
+    glTextureStorage2D(ID, 1, InternalFormat, Width, Height);
     return ID;
 }
 
 static void
 AddFramebufferTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
-    GLuint Texture = CreateTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat, 0);
+    GLuint Texture = CreateFramebufferTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat);
     
     u32 ColorIndex = Framebuffer->ColorAttachmentCount;
     Framebuffer->ColorTarget[ColorIndex] = Texture;
@@ -340,7 +324,14 @@ AddFramebufferTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
 
 static void
 AddFramebufferDepthTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
-    GLuint Texture = CreateTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat, 0);
+    GLuint Texture = CreateDepthTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat);
+    Framebuffer->DepthTarget = Texture;
+    glNamedFramebufferTexture(Framebuffer->ID, GL_DEPTH_ATTACHMENT, Framebuffer->DepthTarget, 0);
+}
+
+static void
+AddFramebufferDepthCubemapTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
+    GLuint Texture = CreateDepthCubemapTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat);
     Framebuffer->DepthTarget = Texture;
     glNamedFramebufferTexture(Framebuffer->ID, GL_DEPTH_ATTACHMENT, Framebuffer->DepthTarget, 0);
 }
@@ -361,16 +352,8 @@ EndFramebufferCreation(framebuffer* Framebuffer) {
     Assert(FrameBufferStatus == GL_FRAMEBUFFER_COMPLETE);
 }
 
-static u64
-RegisterBindlessTexture(GLuint ID) {
-    u64 Result = glGetTextureHandleARB(ID);
-    glMakeTextureHandleResidentARB(Result);
-    return Result;
-}
-
-static u32
-RegisterTexture(gltf_texture GLTFTexture) {
-    u32 Result = 0;
+static GLuint
+CreateTexture(gltf_texture GLTFTexture) {
     u32 Width = GLTFTexture.Width; 
     u32 Height = GLTFTexture.Height;
     
@@ -397,18 +380,17 @@ RegisterTexture(gltf_texture GLTFTexture) {
         glTextureSubImage2D(ID, 0, 0, 0, Width, Height, Format, GL_UNSIGNED_BYTE, GLTFTexture.Data);
     }
     
-    Assert(OpenGL->RegisteredTextureCount < MAX_TEXTURE_COUNT);
-    OpenGL->TextureShaderHandleArray[OpenGL->RegisteredTextureCount] = RegisterBindlessTexture(ID);
-    return OpenGL->RegisteredTextureCount++;
+    return ID;
 }
 
-static u32
-RegisterCubemap(u8** ImageArray, s32 Width, s32 Height, u32 InternalFormat) {
-    u32 Result = {};
+static GLuint
+CreateCubemapTexture(u8** ImageArray, s32 Width, s32 Height, u32 InternalFormat) {
     
     GLuint ID;
     glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &ID);
     
+    glTextureParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTextureParameteri(ID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTextureParameteri(ID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTextureParameteri(ID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTextureParameteri(ID, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
@@ -423,197 +405,14 @@ RegisterCubemap(u8** ImageArray, s32 Width, s32 Height, u32 InternalFormat) {
         glTextureSubImage3D(ID, 0, 0, 0, FaceIndex, Width, Height, 1, InternalFormatToFormat(InternalFormat), GL_UNSIGNED_BYTE, ImageData);
     }
     
-    Result = (u32)ID;
-    return(Result);
-}
-
-static u32
-RegisterMesh(gltf_mesh* GLTFMesh) {
-    model_geometry_info* Info = &OpenGL->ModelGeometryInfo;
-    
-    registered_mesh Mesh = {};
-    Mesh.VertexCount = GLTFMesh->VertexCount;
-    Mesh.IndexCount = GLTFMesh->IndexCount;
-    Mesh.BaseVertex = Info->CurrentVertexCount;
-    Mesh.BaseIndex = Info->CurrentIndexCount;
-    
-    glBindVertexArray(Info->VAO);
-    
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, Info->IndexBuffer);
-    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, Info->CurrentIndexCount*sizeof(u32), Mesh.IndexCount*sizeof(u32), (void*)GLTFMesh->Indices);
-    
-    glBindBuffer(GL_ARRAY_BUFFER, Info->PBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, Info->CurrentVertexCount*sizeof(v3), Mesh.VertexCount*sizeof(v3), (void*)GLTFMesh->P);
-    
-    glBindBuffer(GL_ARRAY_BUFFER, Info->UVBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, Info->CurrentVertexCount*sizeof(v2), Mesh.VertexCount*sizeof(v2), (void*)GLTFMesh->UV);
-    
-    glBindBuffer(GL_ARRAY_BUFFER, Info->NBuffer);
-    glBufferSubData(GL_ARRAY_BUFFER, Info->CurrentVertexCount*sizeof(v3), Mesh.VertexCount*sizeof(v3), (void*)GLTFMesh->N);
-    
-    if(GLTFMesh->Tangents) {
-        glBindBuffer(GL_ARRAY_BUFFER, Info->TangentsBuffer);
-        glBufferSubData(GL_ARRAY_BUFFER, Info->CurrentVertexCount*sizeof(v4), Mesh.VertexCount*sizeof(v4), (void*)GLTFMesh->Tangents);
-    }
-    glBindVertexArray(0);
-    
-    Info->CurrentVertexCount += Mesh.VertexCount;
-    Info->CurrentIndexCount += Mesh.IndexCount;
-    
-    OpenGL->RegisteredMeshArray[OpenGL->RegisteredMeshCount] = Mesh;
-    Assert(OpenGL->RegisteredMeshCount < ArrayCount(OpenGL->RegisteredMeshArray));
-    return OpenGL->RegisteredMeshCount++;
-}
-
-static u32
-RegisterGeneratedMesh(generated_mesh* GeneratedMesh) {
-    gltf_mesh GLTFMesh = {};
-    GLTFMesh.P = GeneratedMesh->P;
-    GLTFMesh.UV = GeneratedMesh->UV;
-    GLTFMesh.N = GeneratedMesh->N;
-    GLTFMesh.VertexCount = GeneratedMesh->VertexCount;
-    GLTFMesh.Indices = GeneratedMesh->Indices;
-    GLTFMesh.IndexCount = GeneratedMesh->IndexCount;
-    GLTFMesh.TriangleCount = GeneratedMesh->IndexCount / 3;
-    
-    return RegisterMesh(&GLTFMesh);
-}
-
-static void
-InitializeStandardGeometry(u32 MaxVertexCount) {
-    
-    u32 MaxIndexCount = MaxVertexCount;
-    
-    model_geometry_info* Info = &OpenGL->ModelGeometryInfo;
-    
-    Info->MaxVertexCount = MaxVertexCount;
-    Info->MaxIndexCount = MaxIndexCount;
-    
-    Info->CurrentIndexCount = 0;
-    Info->CurrentVertexCount = 0;
-    
-    glCreateVertexArrays(1, &Info->VAO);
-    glBindVertexArray(Info->VAO);
-    
-    glCreateBuffers(1, &Info->IndexBuffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, Info->IndexBuffer);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, Info->MaxIndexCount*sizeof(u32), 0, GL_STREAM_DRAW);
-    
-    glCreateBuffers(1, &Info->PBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, Info->PBuffer);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
-    glBufferData(GL_ARRAY_BUFFER, Info->MaxVertexCount*sizeof(v3), 0, GL_STREAM_DRAW);
-    
-    glCreateBuffers(1, &Info->UVBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, Info->UVBuffer);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, 0);
-    glBufferData(GL_ARRAY_BUFFER, Info->MaxVertexCount*sizeof(v2), 0, GL_STREAM_DRAW);
-    
-    glCreateBuffers(1, &Info->NBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, Info->NBuffer);
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, 0);
-    glBufferData(GL_ARRAY_BUFFER, Info->MaxVertexCount*sizeof(v3), 0, GL_STREAM_DRAW);
-    
-    glCreateBuffers(1, &Info->TangentsBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, Info->TangentsBuffer);
-    glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 0, 0);
-    glBufferData(GL_ARRAY_BUFFER, Info->MaxVertexCount*sizeof(v4), 0, GL_STREAM_DRAW);
-    
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->DrawIDBuffer);
-    glEnableVertexAttribArray(4);
-    glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, 0, 0);
-    glVertexAttribDivisor(4, 1);
-    
-    glBindVertexArray(0);
-}
-
-static void
-InitializeFullScreenGeometry() {
-    glCreateVertexArrays(1, &OpenGL->FullscreenVAO);
-    glBindVertexArray(OpenGL->FullscreenVAO);
-    
-    glCreateBuffers(1, &OpenGL->FullscreenVBO);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->FullscreenVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(GLOBALScreenQuadVertices), &GLOBALScreenQuadVertices, GL_STATIC_DRAW);
-    
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(f32), 0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(f32), (void*)(sizeof(f32)*3));
-    
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-}
-
-static void
-InitializeCubemapGeometry() {
-    glCreateVertexArrays(1, &OpenGL->CubemapVAO);
-    glBindVertexArray(OpenGL->CubemapVAO);
-    
-    glCreateBuffers(1, &OpenGL->CubemapVBO);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->CubemapVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(GLOBALCubemapVertices), &GLOBALCubemapVertices, GL_STATIC_DRAW);
-    
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3*sizeof(f32), 0);
-    
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    return ID;
 }
 
 static void
 InitializeOpenGL() {
     
-    v2u RenderSize = PlatformGetWindowDimension();
-    OpenGL->RenderWidth = RenderSize.x;
-    OpenGL->RenderHeight = RenderSize.y;
-    
     glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
     glDebugMessageCallbackARB(OpenGLDebugMessageCallback, NULL);
-    
-#define MAX_DRAWS_PER_BATCH 2048
-    u32 DrawIDs[MAX_DRAWS_PER_BATCH] = {};
-    
-    for(u32 I = 0;
-        I < MAX_DRAWS_PER_BATCH;
-        I++) {
-        DrawIDs[I] = I + 0;
-    }
-    
-    glCreateBuffers(1, &OpenGL->DrawIDBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, OpenGL->DrawIDBuffer);
-    glNamedBufferData(OpenGL->DrawIDBuffer, sizeof(u32)*MAX_DRAWS_PER_BATCH, DrawIDs, GL_STATIC_DRAW);
-    
-    glCreateBuffers(1, &OpenGL->TextureBuffer);
-    glNamedBufferData(OpenGL->TextureBuffer, sizeof(OpenGL->TextureShaderHandleArray), NULL, GL_STATIC_DRAW);
-    
-    glGenBuffers(1, &OpenGL->IndirectCommandBuffer);
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, OpenGL->IndirectCommandBuffer);
-    
-    
-#define MAX_VERTEX_COUNT 65536*2*2*2*2
-    
-    InitializeStandardGeometry(MAX_VERTEX_COUNT);
-    InitializeFullScreenGeometry();
-    InitializeCubemapGeometry();
-    
-    u8 WhiteBitmapData[4];
-    WhiteBitmapData[0] = 255;
-    WhiteBitmapData[1] = 255;
-    WhiteBitmapData[2] = 255;
-    WhiteBitmapData[3] = 255; 
-    gltf_texture WhiteTexture = {};
-    WhiteTexture.Width = 1;
-    WhiteTexture.Height = 1;
-    WhiteTexture.Channels = 4;
-    WhiteTexture.Data = WhiteBitmapData;
-    
-    RegisterTexture(WhiteTexture);
-    
     
     v4 ClearColor = V4(1, 1, 1, 0);
     glClearColor(ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a);

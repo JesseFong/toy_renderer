@@ -19,9 +19,6 @@ struct directional_light {
 struct point_light {
     vec3 Position;
     vec3 Color;
-    float Constant;
-    float Linear;
-    float Quadratic;
 };
 
 struct draw_uniform {

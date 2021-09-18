@@ -37,7 +37,7 @@ LoadShader(app_memory* Memory, char* VertPath, char* FragPath, char* GeomPath) {
     
     b32 HasGeometryShader = false;
     char* GeomSource = 0;
-    if(GeomSource) {
+    if(GeomPath) {
         HasGeometryShader = true;
         platform_file_info GeomInfo = PlatformOpenFile(GeomPath);
         GeomSource = (char*)ArenaPushSizePlusNull(&Memory->TempArena, GeomInfo.FileSize);

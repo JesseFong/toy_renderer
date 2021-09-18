@@ -22,8 +22,20 @@ enum shader_flags {
     SHADER_FLAG_USE_COLOR = 1 << 0,
     SHADER_FLAG_USE_ROUGHNESS = 1 << 1,
     SHADER_FLAG_USE_METALLIC = 1 << 2,
-}; 
+};
 
+enum resolve_texture_names {
+    TEXTURE_ALBEDO,
+    TEXTURE_NORMAL,
+    TEXTURE_ROUGHNESS,
+    TEXTURE_POSITION,
+    TEXTURE_DEPTH,
+    TEXTURE_SHADOWED,
+};
+
+struct renderer_options {
+    u32 FramebufferTextureToDisplay;
+};
 
 struct per_draw_uniforms {
     u32 AlbedoID;
@@ -51,15 +63,8 @@ struct point_light {
     
     v3 Position;
     float Pad;
-    
     v3 Color;
-    f32 Constant;
-    
-    f32 Linear;
-    f32 Quadratic;
-    
-    f32 Pad1;
-    f32 Pad2;
+    float Pad0;
 };
 
 struct frame_uniforms {
@@ -71,21 +76,313 @@ struct frame_uniforms {
     u32 FramebufferTextureToDisplay;
 };
 
-GLuint DrawUniformBuffer;
-per_draw_uniforms* DrawUniformArray;
-framebuffer GBufferFramebuffer;
+#define MAX_DRAWS_PER_BATCH 2048
+#define MAX_VERTICES 65536*2*2*2*2
+#define MAX_INDIRECT_COMMANDS 65536
+#define MAX_TEXTURE_HANDLES 1024
+#define MAX_MESH_HANDLES 512
 
-GLuint FrameUniformBuffer;
-frame_uniforms FrameUniforms;
+struct mesh_geometry_buffers {
+    GLuint VAO;
+    GLuint PBuffer;
+    GLuint UVBuffer;
+    GLuint NBuffer;
+    GLuint ColorBuffer;
+    GLuint IndexBuffer;
+    
+    u32 MaxVertexCount;
+    u32 MaxIndexCount;
+    
+    u32 CurrentVertexCount;
+    u32 CurrentIndexCount;
+};
 
-framebuffer ResolveFramebuffer;
+struct gl_context {
+    u32 RenderWidth;
+    u32 RenderHeight;
+    
+    mesh_geometry_buffers MeshInfo;
+    registered_mesh MeshHandles[MAX_MESH_HANDLES];
+    u32 MeshHandleCount;
+    
+    GLuint FullscreenVAO;
+    GLuint FullscreenVBO;
+    
+    GLuint CubemapVAO;
+    GLuint CubemapVBO;
+    
+    GLuint DrawIDBuffer;
+    
+    GLuint IndirectCommandBuffer;
+    draw_element_indirect_command IndirectCommands[MAX_INDIRECT_COMMANDS];
+    u32 IndirectCommandsCount;
+    
+    GLuint TextureHandleBuffer;
+    u64 TextureHandles[MAX_TEXTURE_HANDLES];
+    u32 TextureHandleCount;
+    
+    GLuint DrawUniformBuffer;
+    per_draw_uniforms DrawUniforms[MAX_DRAWS_PER_BATCH];
+    
+    GLuint FrameUniformBuffer;
+    frame_uniforms FrameUniforms;
+    
+    framebuffer ShadowmapFramebuffer;
+    framebuffer CubeShadowmapFramebuffer;
+    framebuffer GBufferFramebuffer;
+    framebuffer ResolveFramebuffer;
+    
+    shader ShadowmapShader;
+    shader PointLightShadowShader;
+    shader SkyboxShader;
+    shader GBufferShader;
+    shader ResolveShader;
+};
 
-framebuffer ShadowmapFramebuffer;
+gl_context* OpenGL = NULL;
 
-shader GBufferShader = {};
-shader ResolveShader = {};
-shader ShadowmapShader = {};
-shader SkyboxShader = {};
+static void
+InitializeMeshInfo() {
+    
+    u32 MaxVertexCount = MAX_VERTICES;
+    u32 MaxIndexCount = MaxVertexCount;
+    
+    mesh_geometry_buffers* Info = &OpenGL->MeshInfo;
+    
+    Info->MaxVertexCount = MaxVertexCount;
+    Info->MaxIndexCount = MaxIndexCount;
+    
+    Info->CurrentIndexCount = 0;
+    Info->CurrentVertexCount = 0;
+    
+    glCreateVertexArrays(1, &Info->VAO);
+    
+    glCreateBuffers(1, &Info->IndexBuffer);
+    glNamedBufferStorage(Info->IndexBuffer, sizeof(u32)*MaxIndexCount, NULL, GL_DYNAMIC_STORAGE_BIT);
+    glVertexArrayElementBuffer(Info->VAO, Info->IndexBuffer);
+    
+    glCreateBuffers(1, &Info->PBuffer);
+    glNamedBufferStorage(Info->PBuffer, sizeof(v3)*MaxVertexCount, NULL, GL_DYNAMIC_STORAGE_BIT);
+    glVertexArrayVertexBuffer(Info->VAO, 0, Info->PBuffer, 0, sizeof(f32)*3);
+    glEnableVertexArrayAttrib(Info->VAO, 0);
+    glVertexArrayAttribFormat(Info->VAO, 0, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(Info->VAO, 0, 0);
+    
+    glCreateBuffers(1, &Info->UVBuffer);
+    glNamedBufferStorage(Info->UVBuffer, sizeof(v2)*MaxVertexCount, NULL, GL_DYNAMIC_STORAGE_BIT);
+    glVertexArrayVertexBuffer(Info->VAO, 1, Info->UVBuffer, 0, sizeof(f32)*2);
+    glEnableVertexArrayAttrib(Info->VAO, 1);
+    glVertexArrayAttribFormat(Info->VAO, 1, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(Info->VAO, 1, 1);
+    
+    glCreateBuffers(1, &Info->NBuffer);
+    glNamedBufferStorage(Info->NBuffer, sizeof(v3)*MaxVertexCount, NULL, GL_DYNAMIC_STORAGE_BIT);
+    glVertexArrayVertexBuffer(Info->VAO, 2, Info->NBuffer, 0, sizeof(f32)*3);
+    glEnableVertexArrayAttrib(Info->VAO, 2);
+    glVertexArrayAttribFormat(Info->VAO, 2, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(Info->VAO, 2, 2);
+    
+    u32 DrawIDs[MAX_DRAWS_PER_BATCH] = {};
+    for(u32 I = 0;
+        I < MAX_DRAWS_PER_BATCH;
+        I++) {
+        DrawIDs[I] = I;
+    }
+    glCreateBuffers(1, &OpenGL->DrawIDBuffer);
+    glNamedBufferData(OpenGL->DrawIDBuffer, sizeof(u32)*MAX_DRAWS_PER_BATCH, DrawIDs, GL_STATIC_DRAW);
+    
+    glVertexArrayVertexBuffer(Info->VAO, 3, OpenGL->DrawIDBuffer, 0, sizeof(u32));
+    glEnableVertexArrayAttrib(Info->VAO, 3);
+    glVertexArrayAttribIFormat(Info->VAO, 3, 1, GL_UNSIGNED_INT, 0);
+    glVertexArrayAttribBinding(Info->VAO, 3, 3);
+    glVertexArrayBindingDivisor(Info->VAO, 3, 1);
+    
+}
+
+static void
+InitializeFullScreenInfo() {
+    
+    glCreateVertexArrays(1, &OpenGL->FullscreenVAO);
+    
+    glCreateBuffers(1, &OpenGL->FullscreenVBO);
+    glNamedBufferData(OpenGL->FullscreenVBO, sizeof(GLOBALScreenQuadVertices), &GLOBALScreenQuadVertices, GL_STATIC_DRAW);
+    
+    glVertexArrayVertexBuffer(OpenGL->FullscreenVAO, 0, OpenGL->FullscreenVBO, 0, sizeof(f32)*5);
+    
+    glEnableVertexArrayAttrib(OpenGL->FullscreenVAO, 0);
+    glVertexArrayAttribFormat(OpenGL->FullscreenVAO, 0, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(OpenGL->FullscreenVAO, 0, 0);
+    
+    glEnableVertexArrayAttrib(OpenGL->FullscreenVAO, 1);
+    glVertexArrayAttribFormat(OpenGL->FullscreenVAO, 1, 2, GL_FLOAT, GL_FALSE, sizeof(f32)*3);
+    glVertexArrayAttribBinding(OpenGL->FullscreenVAO, 1, 0);
+}
+
+static void
+InitializeCubemapInfo() {
+    glCreateVertexArrays(1, &OpenGL->CubemapVAO);
+    
+    glCreateBuffers(1, &OpenGL->CubemapVBO);
+    glNamedBufferData(OpenGL->CubemapVBO, sizeof(GLOBALCubemapVertices), &GLOBALCubemapVertices, GL_STATIC_DRAW);
+    
+    glVertexArrayVertexBuffer(OpenGL->CubemapVAO, 0, OpenGL->CubemapVBO, 0, sizeof(f32)*3);
+    glEnableVertexArrayAttrib(OpenGL->CubemapVAO, 0);
+    glVertexArrayAttribFormat(OpenGL->CubemapVAO, 0, 3, GL_FLOAT, GL_FALSE, 0);
+    glVertexArrayAttribBinding(OpenGL->CubemapVAO, 0, 0);
+}
+
+static u32
+RegisterMesh(gltf_mesh* GLTFMesh) {
+    mesh_geometry_buffers* Info = &OpenGL->MeshInfo;
+    
+    registered_mesh Mesh = {};
+    Mesh.VertexCount = GLTFMesh->VertexCount;
+    Mesh.IndexCount = GLTFMesh->IndexCount;
+    Mesh.BaseVertex = Info->CurrentVertexCount;
+    Mesh.BaseIndex = Info->CurrentIndexCount;
+    
+    glNamedBufferSubData(Info->IndexBuffer, Info->CurrentIndexCount*sizeof(u32), Mesh.IndexCount*sizeof(u32), (void*)GLTFMesh->Indices);
+    glNamedBufferSubData(Info->PBuffer, Info->CurrentVertexCount*sizeof(v3), Mesh.VertexCount*sizeof(v3), (void*)GLTFMesh->P);
+    glNamedBufferSubData(Info->UVBuffer, Info->CurrentVertexCount*sizeof(v2), Mesh.VertexCount*sizeof(v2), (void*)GLTFMesh->UV);
+    glNamedBufferSubData(Info->NBuffer, Info->CurrentVertexCount*sizeof(v3), Mesh.VertexCount*sizeof(v3), (void*)GLTFMesh->N);
+    
+    Info->CurrentVertexCount += Mesh.VertexCount;
+    Info->CurrentIndexCount += Mesh.IndexCount;
+    
+    Assert(OpenGL->MeshHandleCount < ArrayCount(OpenGL->MeshHandles));
+    OpenGL->MeshHandles[OpenGL->MeshHandleCount] = Mesh;
+    return OpenGL->MeshHandleCount++;
+}
+
+static u32
+RegisterGeneratedMesh(generated_mesh* GeneratedMesh) {
+    gltf_mesh GLTFMesh = {};
+    GLTFMesh.P = GeneratedMesh->P;
+    GLTFMesh.UV = GeneratedMesh->UV;
+    GLTFMesh.N = GeneratedMesh->N;
+    GLTFMesh.VertexCount = GeneratedMesh->VertexCount;
+    GLTFMesh.Indices = GeneratedMesh->Indices;
+    GLTFMesh.IndexCount = GeneratedMesh->IndexCount;
+    GLTFMesh.TriangleCount = GeneratedMesh->IndexCount / 3;
+    
+    return RegisterMesh(&GLTFMesh);
+}
+
+static u32
+RegisterTexture(GLuint ID) {
+    u64 BindlessHandle = glGetTextureHandleARB(ID);
+    glMakeTextureHandleResidentARB(BindlessHandle);
+    
+    Assert(OpenGL->TextureHandleCount < ArrayCount(OpenGL->TextureHandles));
+    OpenGL->TextureHandles[OpenGL->TextureHandleCount] = BindlessHandle;
+    return OpenGL->TextureHandleCount++;
+}
+
+static draw_element_indirect_command
+GenerateIndirectDrawCommand(u32 MeshID, u32 InstanceCount) {
+    registered_mesh* Mesh = &OpenGL->MeshHandles[MeshID];
+    
+    draw_element_indirect_command IndirectCommand;
+    IndirectCommand.Count = Mesh->IndexCount;
+    IndirectCommand.InstanceCount = 1;
+    IndirectCommand.FirstIndex = Mesh->BaseIndex;
+    IndirectCommand.BaseVertex = Mesh->BaseVertex;
+    IndirectCommand.BaseInstance = OpenGL->IndirectCommandsCount;
+    
+    return IndirectCommand;
+}
+
+static void
+RegisterDrawCommand(u32 MeshID, u32 InstanceCount) {
+    draw_element_indirect_command Command = GenerateIndirectDrawCommand(MeshID, InstanceCount);
+    OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = Command;
+    OpenGL->IndirectCommandsCount++;
+}
+
+static void
+InitializeOpenGLScene(app_memory* Memory, u32 WindowWidth, u32 WindowHeight) {
+    
+    OpenGL = ArenaPushStruct(&Memory->MainArena, gl_context);
+    
+    v2u RenderSize = PlatformGetWindowDimension();
+    OpenGL->RenderWidth = RenderSize.x;
+    OpenGL->RenderHeight = RenderSize.y;
+    
+    InitializeMeshInfo();
+    InitializeFullScreenInfo();
+    InitializeCubemapInfo();
+    
+    glCreateBuffers(1, &OpenGL->IndirectCommandBuffer);
+    glNamedBufferStorage(OpenGL->IndirectCommandBuffer, sizeof(OpenGL->IndirectCommands), NULL, GL_DYNAMIC_STORAGE_BIT);
+    
+    glCreateBuffers(1, &OpenGL->TextureHandleBuffer);
+    glNamedBufferStorage(OpenGL->TextureHandleBuffer, sizeof(OpenGL->TextureHandles), NULL, GL_DYNAMIC_STORAGE_BIT);
+    
+    glCreateBuffers(1, &OpenGL->DrawUniformBuffer);
+    glNamedBufferData(OpenGL->DrawUniformBuffer, sizeof(per_draw_uniforms)*MAX_DRAWS_PER_BATCH, NULL, GL_DYNAMIC_DRAW);
+    
+    glCreateBuffers(1, &OpenGL->FrameUniformBuffer);
+    glNamedBufferData(OpenGL->FrameUniformBuffer, sizeof(frame_uniforms), NULL, GL_DYNAMIC_DRAW);
+    
+    OpenGL->GBufferFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA8);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA8);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
+    AddFramebufferDepthTexture(&OpenGL->GBufferFramebuffer, GL_DEPTH_COMPONENT16);
+    EndFramebufferCreation(&OpenGL->GBufferFramebuffer);
+    
+    OpenGL->ResolveFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
+    AddFramebufferTexture(&OpenGL->ResolveFramebuffer, GL_RGBA8);
+    EndFramebufferCreation(&OpenGL->ResolveFramebuffer);
+    
+    generated_mesh SphereMesh = GenerateSphere(1);
+    Memory->Scene.GeneratedSphereID = RegisterGeneratedMesh(&SphereMesh);
+    generated_mesh CubeMesh = GenerateTessellatedCube(1);
+    Memory->Scene.GeneratedCubeID = RegisterGeneratedMesh(&CubeMesh);
+    
+    OpenGL->ShadowmapFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
+    AddFramebufferDepthTexture(&OpenGL->ShadowmapFramebuffer, GL_DEPTH_COMPONENT16);
+    EndFramebufferCreation(&OpenGL->ShadowmapFramebuffer);
+    
+#if 1
+    OpenGL->CubeShadowmapFramebuffer = CreateFramebuffer(1024, 1024);
+    AddFramebufferDepthCubemapTexture(&OpenGL->CubeShadowmapFramebuffer, GL_DEPTH_COMPONENT16);
+    EndFramebufferCreation(&OpenGL->CubeShadowmapFramebuffer);
+#endif
+    
+    u8 WhiteBitmapData[4];
+    WhiteBitmapData[0] = 255;
+    WhiteBitmapData[1] = 255;
+    WhiteBitmapData[2] = 255;
+    WhiteBitmapData[3] = 255; 
+    gltf_texture WhiteTexture = {};
+    WhiteTexture.Width = 1;
+    WhiteTexture.Height = 1;
+    WhiteTexture.Channels = 4;
+    WhiteTexture.Data = WhiteBitmapData;
+    GLuint WhiteTextureID = CreateTexture(WhiteTexture);
+    
+    u32 WhiteTextureIndex = RegisterTexture(WhiteTextureID);
+    Assert(WhiteTextureIndex == 0);
+    
+    u8 DefaultNormalBitmapData[4];
+    DefaultNormalBitmapData[0] = 128;
+    DefaultNormalBitmapData[1] = 128;
+    DefaultNormalBitmapData[2] = 255;
+    DefaultNormalBitmapData[3] = 255; 
+    gltf_texture DefaultNormalTexture = {};
+    DefaultNormalTexture.Width = 1;
+    DefaultNormalTexture.Height = 1;
+    DefaultNormalTexture.Channels = 4;
+    DefaultNormalTexture.Data = DefaultNormalBitmapData;
+    GLuint DefaultNormalTextureID = CreateTexture(DefaultNormalTexture);
+    
+    u32 DefaultNormalTextureIndex = RegisterTexture(DefaultNormalTextureID);
+    Assert(DefaultNormalTextureIndex == 1);
+}
 
 
 static m4x4_inv
@@ -114,6 +411,21 @@ GenerateDirectionLightProj(directional_light Light) {
     
     
     return Result;
+}
+
+
+static void
+GeneratePointLightProj(v3 P, m4x4* ProjArray) {
+    
+    m4x4 LightProj = PerspectiveProjection(1, Radians(90.0), 0.1, 10.0).Forward;
+    
+    ProjArray[0] = LightProj * LookAt(P, P + V3(1, 0, 0), V3(0, -1, 0)).Forward;
+    ProjArray[1] = LightProj * LookAt(P, P + V3(-1, 0, 0), V3(0, -1, 0)).Forward;
+    ProjArray[2] = LightProj * LookAt(P, P + V3(0, 1, 0), V3(0, 0, 1)).Forward;
+    ProjArray[3] = LightProj * LookAt(P, P + V3(0, -1, 0), V3(0, 0, -1)).Forward;
+    ProjArray[4] = LightProj * LookAt(P, P + V3(0, 0, 1), V3(0, -1, 0)).Forward;
+    ProjArray[5] = LightProj * LookAt(P, P + V3(0, 0, -1), V3(0, -1, 0)).Forward;
+    
 }
 
 static m4x4_inv
@@ -187,10 +499,52 @@ LoadSkybox(app_memory* Memory) {
     DataArray[4] = SkyboxImages[4].Data;
     DataArray[5] = SkyboxImages[5].Data;
     
-    Memory->Scene.SkyboxID = RegisterCubemap(DataArray, SkyboxImages[0].Width, SkyboxImages[0].Height, GL_RGB8);
+    Memory->Scene.SkyboxID = CreateCubemapTexture(DataArray, SkyboxImages[0].Width, SkyboxImages[0].Height, GL_RGB8);
     
     stbi_set_flip_vertically_on_load(false);
 }
+
+static per_draw_uniforms
+BuildDrawUniforms(v3 P, v3 S, f32 Roughness, f32 Metalness, v4 Color) {
+    
+    per_draw_uniforms DrawUniform = {};
+    DrawUniform.RoughnessFactor = Roughness;
+    DrawUniform.MetallicFactor = Metalness;
+    DrawUniform.ShaderFlags |= SHADER_FLAG_USE_COLOR;
+    DrawUniform.ShaderFlags |= SHADER_FLAG_USE_ROUGHNESS;
+    DrawUniform.ShaderFlags |= SHADER_FLAG_USE_METALLIC;
+    DrawUniform.Color = Color;
+    
+    m4x4 M = M4x4Identity();
+    M = Translate(M, P);
+    M = Scale(M, S);
+    DrawUniform.ModelProj = M;
+    
+    return DrawUniform;
+}
+
+static void
+DrawCube(app_memory* Memory, v3 P, v3 S, f32 Roughness, f32 Metalness, v4 Color) {
+    
+    per_draw_uniforms DrawUniform = BuildDrawUniforms(P, S, Roughness, Metalness, Color);
+    OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
+    
+    u32 MeshID = Memory->Scene.GeneratedCubeID;
+    RegisterDrawCommand(MeshID, 1);
+}
+
+
+static void
+DrawSphere(app_memory* Memory, v3 P, v3 Scale, f32 Roughness, f32 Metalness, v4 Color) {
+    
+    per_draw_uniforms DrawUniform = BuildDrawUniforms(P, Scale, Roughness, Metalness, Color);
+    DrawUniform.NormalID = 1;
+    OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
+    
+    u32 MeshID = Memory->Scene.GeneratedSphereID;
+    RegisterDrawCommand(MeshID, 1);
+}
+
 
 static void
 InitializeScene(app_memory* Memory) {
@@ -231,129 +585,15 @@ InitializeScene(app_memory* Memory) {
             gltf_texture Texture = Scene->LoadedModel.MaterialArray[Mesh->MaterialIndex].Materials[TextureIndex].Texture;
             
             if(Texture.Data) {
-                Scene->RenderMeshTextureArray[MeshIndex][TextureIndex] = RegisterTexture(Texture); 
+                GLuint TextureID = CreateTexture(Texture);
+                Scene->RenderMeshTextureArray[MeshIndex][TextureIndex] = RegisterTexture(TextureID); 
             }
         }
     }
     
-    glNamedBufferSubData(OpenGL->TextureBuffer, 0, sizeof(u64)*OpenGL->RegisteredTextureCount, OpenGL->TextureShaderHandleArray);
-    
-    
-    glCreateBuffers(1, &DrawUniformBuffer);
-    glNamedBufferData(DrawUniformBuffer, sizeof(per_draw_uniforms)*MAX_DRAWS_PER_BATCH, NULL, GL_DYNAMIC_DRAW);
-    DrawUniformArray = (per_draw_uniforms*)ArenaPush(&Memory->MainArena, sizeof(per_draw_uniforms)*MAX_DRAWS_PER_BATCH);
-    
-    
-    glCreateBuffers(1, &FrameUniformBuffer);
-    glNamedBufferData(FrameUniformBuffer, sizeof(frame_uniforms), NULL, GL_DYNAMIC_DRAW);
-    
-    GBufferFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
-    AddFramebufferTexture(&GBufferFramebuffer, GL_RGBA8);
-    AddFramebufferTexture(&GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferTexture(&GBufferFramebuffer, GL_RGBA8);
-    AddFramebufferTexture(&GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferTexture(&GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferDepthTexture(&GBufferFramebuffer, GL_DEPTH_COMPONENT16);
-    EndFramebufferCreation(&GBufferFramebuffer);
-    
-    
-    ResolveFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
-    AddFramebufferTexture(&ResolveFramebuffer, GL_RGBA8);
-    EndFramebufferCreation(&ResolveFramebuffer);
-    
-    
-    generated_mesh SphereMesh = GenerateSphere(1);
-    Memory->Scene.GeneratedSphereID = RegisterGeneratedMesh(&SphereMesh);
-    generated_mesh CubeMesh = GenerateTessellatedCube(1);
-    Memory->Scene.GeneratedCubeID = RegisterGeneratedMesh(&CubeMesh);
-    
-    ShadowmapFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
-    AddFramebufferDepthTexture(&ShadowmapFramebuffer, GL_DEPTH_COMPONENT16);
-    EndFramebufferCreation(&ShadowmapFramebuffer);
-    
-    
-    Scene->IsInitialized = true;
-}
-
-
-static void
-UpdateAndRender(app_memory* Memory) {
-    
-    if(!Memory->Scene.IsInitialized) {
-        LoadModel(Memory);
-        LoadSkybox(Memory);
-        InitializeScene(Memory);
-        
-        GBufferShader = LoadShader(Memory, "gl_shaders/shader.vert", "gl_shaders/shader.frag", 0);
-        ResolveShader = LoadShader(Memory, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
-        ShadowmapShader = LoadShader(Memory, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
-        SkyboxShader = LoadShader(Memory, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
-        
-    }
-    
-    MaybeReloadShader(Memory, &GBufferShader, "gl_shaders/shader.vert", "gl_shaders/shader.frag", 0);
-    MaybeReloadShader(Memory, &ResolveShader, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
-    MaybeReloadShader(Memory, &ShadowmapShader, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
-    MaybeReloadShader(Memory, &SkyboxShader, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
-    
-    UpdateCamera(&Memory->Scene.Camera);
     OpenGL->IndirectCommandsCount = 0;
     
-    point_light Lights[4] = {};
-    Lights[0].Position = V3(4, 1, 3);
-    Lights[0].Color = V3(0.9, 0.9, 0.9);
-    Lights[0].Constant = 1.0;
-    Lights[0].Linear = 0.7;
-    Lights[0].Quadratic = 1.8;
-    
-    Lights[1].Position = V3(4, 3, 3);
-    Lights[1].Color = V3(0.9, 0.9, 0.9);
-    Lights[1].Constant = 1.0;
-    Lights[1].Linear = 0.7;
-    Lights[1].Quadratic = 1.8;
-    
-    Lights[2].Position = V3(0, 1, 3);
-    Lights[2].Color = V3(0.9, 0.9, 0.9);
-    Lights[2].Constant = 1.0;
-    Lights[2].Linear = 0.7;
-    Lights[2].Quadratic = 1.8;
-    
-    Lights[3].Position = V3(0, 3, 3);
-    Lights[3].Color = V3(0.9, 0.9, 0.9);
-    Lights[3].Constant = 1.0;
-    Lights[3].Linear = 0.7;
-    Lights[3].Quadratic = 1.8;
-    
-    directional_light SunLight = {};
-    SunLight.Direction = Normalize(V3(0.3, 1, 0));
-    SunLight.Color = V3(0.8, 0.8, 0.2);
-    
-    m4x4_inv SunLightProj = GenerateDirectionLightProj(SunLight);
-    
-    for(u32 LightIndex = 0;
-        LightIndex < 4;
-        LightIndex++) {
-        per_draw_uniforms DrawUniform = {};
-        DrawUniform.RoughnessFactor = 0;
-        DrawUniform.MetallicFactor = 1;
-        DrawUniform.ShaderFlags |= SHADER_FLAG_USE_COLOR;
-        DrawUniform.Color = V4(1, 1, 1, 1);
-        
-        m4x4 M = M4x4Identity();
-        M = Translate(M, Lights[LightIndex].Position);
-        M = Scale(M, V3(0.1, 0.1, 0.1));
-        DrawUniform.ModelProj = M;
-        
-        
-        DrawUniformArray[OpenGL->IndirectCommandsCount] = DrawUniform;
-        
-        u32 MeshID = Memory->Scene.GeneratedSphereID;
-        OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
-        OpenGL->IndirectCommandsCount++;
-        
-    }
-    
-    
+#if 0
     u32 SphereCount = 5;
     for(u32 Y = 0;
         Y < SphereCount;
@@ -362,31 +602,30 @@ UpdateAndRender(app_memory* Memory) {
             X < SphereCount;
             X++) {
             
-            per_draw_uniforms DrawUniform = {};
-            
             f32 tRough = (f32)X / (f32)(SphereCount);
             f32 tMetal = (f32)Y / (f32)(SphereCount);
-            DrawUniform.RoughnessFactor = tRough;
-            DrawUniform.MetallicFactor = tMetal;
-            DrawUniform.ShaderFlags |= SHADER_FLAG_USE_COLOR;
-            DrawUniform.ShaderFlags |= SHADER_FLAG_USE_ROUGHNESS;
-            DrawUniform.ShaderFlags |= SHADER_FLAG_USE_METALLIC;
-            DrawUniform.Color = V4(1, 0, 0, 1);
+            v4 Color = V4(1, 0, 0, 1);
+            v3 P = V3(0, Y, X);
+            v3 S = V3(0.5, 0.5, 0.5);
             
-            m4x4 M = M4x4Identity();
-            M = Translate(M , V3(0, Y, X));
-            M = Scale(M, V3(0.5, 0.5, 0.5));
-            DrawUniform.ModelProj = M;
-            
-            
-            DrawUniformArray[OpenGL->IndirectCommandsCount] = DrawUniform;
-            
-            u32 MeshID = Memory->Scene.GeneratedSphereID;
-            OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
-            OpenGL->IndirectCommandsCount++;
-            
+            DrawSphere(Memory, P, S, tRough, tMetal, Color);
         }
     }
+#endif
+    
+#if 0
+    {
+        
+        DrawCube(Memory, V3(0, 0, 0), V3(5, 0.1, 5), 1, 1, V4(1, 1, 1, 1));
+        DrawCube(Memory, V3(5, 1.5, 0), V3(0.1, 3, 5), 1, 1, V4(1, 1, 1, 1));
+        DrawCube(Memory, V3(-5, 1.5, 0), V3(0.1, 3, 5), 1, 1, V4(1, 1, 1, 1));
+        DrawCube(Memory, V3(0, 1.5, 5), V3(5, 3, 0.1), 1, 1, V4(1, 1, 1, 1));
+        
+        DrawCube(Memory, V3(2, 2, 0), V3(0.5, 0.5, 0.5), 0.9, 0.9, V4(0.8, 0.8, 0.2, 1));
+        DrawCube(Memory, V3(-2, 2, -2), V3(0.5, 0.5, 0.5), 0.9, 0.9, V4(0.8, 0.8, 0.2, 1));
+        DrawSphere(Memory, V3(-2, 1.5, 0), V3(0.5, 0.5 ,0.5), 0.5, 0.5, V4(1, 0, 0, 1));
+    }
+#endif
     
 #if 1
     for(u32 MeshIndex = 0;
@@ -403,91 +642,194 @@ UpdateAndRender(app_memory* Memory) {
         DrawUniform.MetallicFactor = 0;
         DrawUniform.ModelProj = M4x4Identity();
         
-        DrawUniformArray[OpenGL->IndirectCommandsCount] = DrawUniform;
+        OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
         
         u32 MeshID = Memory->Scene.RenderMeshIDArray[MeshIndex];
-        OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
-        OpenGL->IndirectCommandsCount++;
+        RegisterDrawCommand(MeshID, 1);
     }
 #endif
     
-    m4x4_inv Proj = SetProjection(&Memory->Scene.Camera);
     
-    FrameUniforms.CameraProj = Proj.Forward;
-    FrameUniforms.LightProj = SunLightProj.Forward;
-    FrameUniforms.PointLight[0] = Lights[0];
-    FrameUniforms.PointLight[1] = Lights[1];
-    FrameUniforms.PointLight[2] = Lights[2];
-    FrameUniforms.PointLight[3] = Lights[3];
-    
-    FrameUniforms.SunLight = SunLight;
-    
-    FrameUniforms.FramebufferTextureToDisplay = 0;
-    FrameUniforms.CameraP = Memory->Scene.Camera.P;
-    
-    glNamedBufferSubData(FrameUniformBuffer, 0, sizeof(frame_uniforms), &FrameUniforms); 
+    u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
+    glNamedBufferSubData(OpenGL->TextureHandleBuffer, 0, sizeof(u64)*OpenGL->TextureHandleCount, OpenGL->TextureHandles);
+    glNamedBufferSubData(OpenGL->IndirectCommandBuffer, 0, sizeof(draw_element_indirect_command)*TotalDrawCount, OpenGL->IndirectCommands);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, OpenGL->IndirectCommandBuffer);
     
     glFrontFace(GL_CW);
-    
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glEnable(GL_SCISSOR_TEST);
     
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    //glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glBlendEquation(GL_FUNC_ADD);
-    
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    
+    Scene->IsInitialized = true;
+}
+
+static void
+UpdateAndRender(app_memory* Memory) {
+    
+    if(!Memory->Scene.IsInitialized) {
+        LoadModel(Memory);
+        LoadSkybox(Memory);
+        InitializeScene(Memory);
+        
+        OpenGL->GBufferShader = LoadShader(Memory, "gl_shaders/gbuffer.vert", "gl_shaders/gbuffer.frag", 0);
+        OpenGL->ResolveShader = LoadShader(Memory, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
+        OpenGL->ShadowmapShader = LoadShader(Memory, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
+        OpenGL->SkyboxShader = LoadShader(Memory, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
+        OpenGL->PointLightShadowShader = LoadShader(Memory, "gl_shaders/point_light_shadow.vert", "gl_shaders/point_light_shadow.frag", "gl_shaders/point_light_shadow.geom");
+    }
+    
+    MaybeReloadShader(Memory, &OpenGL->GBufferShader, "gl_shaders/gbuffer.vert", "gl_shaders/gbuffer.frag", 0);
+    MaybeReloadShader(Memory, &OpenGL->ResolveShader, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
+    MaybeReloadShader(Memory, &OpenGL->ShadowmapShader, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
+    MaybeReloadShader(Memory, &OpenGL->SkyboxShader, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
+    MaybeReloadShader(Memory, &OpenGL->PointLightShadowShader, "gl_shaders/point_light_shadow.vert", "gl_shaders/point_light_shadow.frag", "gl_shaders/point_light_shadow.geom");
+    
+    UpdateCamera(&Memory->Scene.Camera);
+    
+    point_light Lights[4] = {};
+    Lights[0].Position = V3(0, 1, 0);
+    Lights[0].Color = V3(0.9, 0.9, 0.9);
+    
+    
+    Lights[1].Position = V3(0, 1, 0);
+    Lights[1].Color = V3(0.9, 0.9, 0.9);
+    
+    
+    Lights[2].Position = V3(0, 1, 0);
+    Lights[2].Color = V3(0.9, 0.9, 0.9);
+    
+    
+    Lights[3].Position = V3(0, 1, 0);
+    Lights[3].Color = V3(0.9, 0.9, 0.9);
+    
+    
+    directional_light SunLight = {};
+    SunLight.Direction = Normalize(V3(0.3, 1, 0));
+    SunLight.Color = V3(0.8, 0.8, 0.2);
+    
+    m4x4_inv SunLightProj = GenerateDirectionLightProj(SunLight);
+    
+#if 0
+    for(u32 LightIndex = 0;
+        LightIndex < 4;
+        LightIndex++) {
+        per_draw_uniforms DrawUniform = {};
+        DrawUniform.RoughnessFactor = 0;
+        DrawUniform.MetallicFactor = 1;
+        DrawUniform.ShaderFlags |= SHADER_FLAG_USE_COLOR;
+        DrawUniform.Color = V4(1, 1, 1, 1);
+        
+        m4x4 M = M4x4Identity();
+        M = Translate(M, Lights[LightIndex].Position);
+        M = Scale(M, V3(0.1, 0.1, 0.1));
+        DrawUniform.ModelProj = M;
+        
+        
+        OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
+        u32 MeshID = Memory->Scene.GeneratedSphereID;
+        OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
+        OpenGL->IndirectCommandsCount++;
+        
+    }
+#endif
+    
+    
+    m4x4_inv Proj = SetProjection(&Memory->Scene.Camera);
+    
+    OpenGL->FrameUniforms.CameraProj = Proj.Forward;
+    OpenGL->FrameUniforms.LightProj = SunLightProj.Forward;
+    OpenGL->FrameUniforms.PointLight[0] = Lights[0];
+    OpenGL->FrameUniforms.PointLight[1] = Lights[1];
+    OpenGL->FrameUniforms.PointLight[2] = Lights[2];
+    OpenGL->FrameUniforms.PointLight[3] = Lights[3];
+    
+    OpenGL->FrameUniforms.SunLight = SunLight;
+    OpenGL->FrameUniforms.FramebufferTextureToDisplay = 0;
+    OpenGL->FrameUniforms.CameraP = Memory->Scene.Camera.P;
+    
+    u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
+    glNamedBufferSubData(OpenGL->DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, OpenGL->DrawUniforms);
+    glNamedBufferSubData(OpenGL->FrameUniformBuffer, 0, sizeof(frame_uniforms), &OpenGL->FrameUniforms);
     
     
     {
-        GLuint Shader = ShadowmapShader.ID;
+        m4x4 CubeShadowProj[6] = {};
+        
+        point_light Light = OpenGL->FrameUniforms.PointLight[0];
+        
+        GeneratePointLightProj(Light.Position, CubeShadowProj);
+        
+        glBindVertexArray(OpenGL->MeshInfo.VAO);
+        
+        GLuint Shader = OpenGL->PointLightShadowShader.ID;
+        glUseProgram(Shader);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->CubeShadowmapFramebuffer.ID);
+        glViewport(0, 0, OpenGL->CubeShadowmapFramebuffer.Width, OpenGL->CubeShadowmapFramebuffer.Height);
+        glScissor(0, 0, OpenGL->CubeShadowmapFramebuffer.Width, OpenGL->CubeShadowmapFramebuffer.Height);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        
+        
+        glUniformMatrix4fv(glGetUniformLocation(Shader, "ShadowMatrices"), 6, GL_TRUE, (GLfloat*)&CubeShadowProj[0]);
+        glUniform3f(glGetUniformLocation(Shader, "LightP"), Light.Position.x, Light.Position.y, Light.Position.z);
+        glUniform1f(glGetUniformLocation(Shader, "FarPlane"), 10.0f);
+        
+        //glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
+        
+        
+        glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
+    }
+    
+    {
+        
+        GLuint Shader = OpenGL->ShadowmapShader.ID;
         glUseProgram(Shader);
         
-        glBindFramebuffer(GL_FRAMEBUFFER, ShadowmapFramebuffer.ID);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->ShadowmapFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         glScissor(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         glClear(GL_DEPTH_BUFFER_BIT);
         
-        glBindVertexArray(OpenGL->ModelGeometryInfo.VAO);
+        glBindVertexArray(OpenGL->MeshInfo.VAO);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), FrameUniformBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), OpenGL->FrameUniformBuffer);
         
-        u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
         //glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), DrawUniformBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
         
-        glBufferData(GL_DRAW_INDIRECT_BUFFER, TotalDrawCount*sizeof(draw_element_indirect_command), OpenGL->IndirectCommands, GL_DYNAMIC_DRAW);
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
     }
     
     {
-        GLuint Shader = GBufferShader.ID;
+        GLuint Shader = OpenGL->GBufferShader.ID;
         
         glUseProgram(Shader);
         
-        glBindFramebuffer(GL_FRAMEBUFFER, GBufferFramebuffer.ID);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->GBufferFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         glScissor(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
         
-        glBindVertexArray(OpenGL->ModelGeometryInfo.VAO);
+        glBindVertexArray(OpenGL->MeshInfo.VAO);
         
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, ShadowmapFramebuffer.DepthTarget);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->ShadowmapFramebuffer.DepthTarget);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, OpenGL->CubeShadowmapFramebuffer.DepthTarget);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "TextureArray"), OpenGL->TextureBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "TextureArray"), OpenGL->TextureHandleBuffer);
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, OpenGL->IndirectCommandBuffer);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), FrameUniformBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), OpenGL->FrameUniformBuffer);
         
-        u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
         
-        glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), DrawUniformBuffer);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
         
-        glBufferData(GL_DRAW_INDIRECT_BUFFER, TotalDrawCount*sizeof(draw_element_indirect_command), OpenGL->IndirectCommands, GL_DYNAMIC_DRAW);
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
     }
     
@@ -495,11 +837,11 @@ UpdateAndRender(app_memory* Memory) {
     {
         
         
-        glBindFramebuffer(GL_FRAMEBUFFER, ResolveFramebuffer.ID);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->ResolveFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         glScissor(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         
-        GLuint Shader = SkyboxShader.ID;
+        GLuint Shader = OpenGL->SkyboxShader.ID;
         glDisable(GL_CULL_FACE);
         glUseProgram(Shader);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -518,6 +860,8 @@ UpdateAndRender(app_memory* Memory) {
         m4x4 FinalSkyboxProj = SkyboxProj.Forward * SkyboxXForm.Forward;
         
         glUniformMatrix4fv(glGetUniformLocation(Shader, "Proj"), 1, GL_TRUE, (GLfloat*)&FinalSkyboxProj);
+        
+        //glBindBuffer(GL_ARRAY_BUFFER, OpenGL->CubemapVBO);
         glDrawArrays(GL_TRIANGLES, 0, 36);
         glEnable(GL_CULL_FACE);
         
@@ -525,30 +869,34 @@ UpdateAndRender(app_memory* Memory) {
     
     
     {
-        GLuint Shader = ResolveShader.ID;
+        
+        GLuint Shader = OpenGL->ResolveShader.ID;
         
         glUseProgram(Shader);
         glBindVertexArray(OpenGL->FullscreenVAO);
-        glBindFramebuffer(GL_FRAMEBUFFER, ResolveFramebuffer.ID);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->ResolveFramebuffer.ID);
         
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[0]);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[0]);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[1]);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[1]);
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[2]);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[2]);
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[4]);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[3]);
         glActiveTexture(GL_TEXTURE4);
-        glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.DepthTarget);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[4]);
         glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_2D, GBufferFramebuffer.ColorTarget[3]);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[5]);
+        glActiveTexture(GL_TEXTURE6);
+        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.DepthTarget);
         
-        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), FrameUniformBuffer);
+        glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), OpenGL->FrameUniformBuffer);
         
+        //glBindBuffer(GL_ARRAY_BUFFER, OpenGL->FullscreenVBO);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         
-        glBlitNamedFramebuffer(ResolveFramebuffer.ID, 0, 0, 0, ResolveFramebuffer.Width, ResolveFramebuffer.Height,
+        glBlitNamedFramebuffer(OpenGL->ResolveFramebuffer.ID, 0, 0, 0, OpenGL->ResolveFramebuffer.Width, OpenGL->ResolveFramebuffer.Height,
                                0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     }
 }

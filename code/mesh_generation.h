@@ -200,6 +200,12 @@ GenerateTessellatedCube(u32 Divisions) {
     Result.VertexCount = FinalVertexCount;
     Result.IndexCount = FinalIndexCount;
     
+    v2 UVArray[3] = {};
+    UVArray[0] = V2(0.1, 0.1);
+    UVArray[1] = V2(0.1, 0.9);
+    UVArray[2] = V2(0.9, 0.9);
+    u32 UVIndex = 0;
+    
     for(u32 SideIndex = 0;
         SideIndex < 6;
         SideIndex++) {
@@ -213,6 +219,11 @@ GenerateTessellatedCube(u32 Divisions) {
             v3 FinalP = Mat * Vertices[VertIndex];
             
             Result.P[SideIndex * DivisionsSq + VertIndex] = FinalP;
+            Result.UV[SideIndex * DivisionsSq + VertIndex] = UVArray[UVIndex++];
+            if(UVIndex == 2) {
+                UVIndex = 0;
+            }
+            
             Result.N[SideIndex * DivisionsSq + VertIndex] = Normalize(FinalP);
         }
         

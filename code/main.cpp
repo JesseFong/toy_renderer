@@ -37,9 +37,8 @@ int main(int argc, char** argv) {
     HDC WindowDC = GLOBALPlatformState->Internal->Window.DC;
     b32 IsInitialized = Win32InitializeOpenGL(WindowDC);
     
-    OpenGL = ArenaPushStruct(&Memory.MainArena, open_gl);
-    
     InitializeOpenGL();
+    InitializeOpenGLScene(&Memory, GLOBALWindowWidth, GLOBALWindowHeight);
     
     while(GLOBALPlatformState->Window.IsRunning) {
         UpdateTime();

@@ -1,0 +1,27 @@
+#version 450 core
+#extension GL_NV_bindless_texture : require
+#extension GL_NV_gpu_shader5 : require
+#extension GL_NV_shader_buffer_load : require
+
+layout (triangles) in;
+layout (triangle_strip, max_vertices=18) out;
+
+uniform mat4 ShadowMatrices[6];
+
+out vec4 FragPos;
+
+void main()
+{
+    for(int face = 0;
+        face < 6;
+        face++) {
+        
+        gl_Layer = face;
+        for(int i = 0; i < 3; i++){
+            FragPos = gl_in[i].gl_Position;
+            gl_Position = ShadowMatrices[face] * FragPos;
+            EmitVertex();
+        }
+        EndPrimitive();
+    }
+}
