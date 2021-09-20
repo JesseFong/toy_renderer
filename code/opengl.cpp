@@ -237,17 +237,23 @@ InternalFormatToFormat(GLenum InternalFormat) {
         
         case(GL_RGB8):
         case(GL_SRGB8):
+        case(GL_RGB10):
+        case(GL_RGB16):
+        case(GL_RGB16F):
+        case(GL_RGB32F):
         { Result = GL_RGB; }break;
         
         case(GL_RGBA8):
         case(GL_SRGB8_ALPHA8):
         case(GL_RGBA16F):
+        case(GL_RGBA32F):
         { Result = GL_RGBA; }break;
         
         case(GL_DEPTH_COMPONENT):
         case(GL_DEPTH_COMPONENT16):
         case(GL_DEPTH_COMPONENT24):
         case(GL_DEPTH_COMPONENT32):
+        case(GL_DEPTH_COMPONENT32F):
         { Result = GL_DEPTH_COMPONENT; }break;
         
         case(GL_DEPTH24_STENCIL8):
@@ -279,10 +285,10 @@ CreateFramebufferTexture(u32 Width, u32 Height, GLenum InternalFormat) {
 }
 
 static GLuint
-CreateDepthTexture(u32 Width, u32 Height, GLenum InternalFormat) {
-    GLenum Format = InternalFormatToFormat(InternalFormat);
+CreateDepthTexture(u32 Width, u32 Height, u32 InternalFormat, GLenum Type) {
+    
     GLuint ID;
-    glCreateTextures(GL_TEXTURE_2D, 1, &ID);
+    glCreateTextures(Type, 1, &ID);
     
     glTextureParameteri(ID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTextureParameteri(ID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -292,15 +298,14 @@ CreateDepthTexture(u32 Width, u32 Height, GLenum InternalFormat) {
     
     glTextureStorage2D(ID, 1, InternalFormat, Width, Height);
     return ID;
+    
 }
 
 static GLuint
-CreateDepthCubemapTexture(u32 Width, u32 Height, GLenum InternalFormat) {
-    
-    GLenum Format = InternalFormatToFormat(InternalFormat);
+Create3DDepthTexture(u32 Width, u32 Height, u32 Depth, u32 InternalFormat, GLenum Type) {
     
     GLuint ID;
-    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &ID);
+    glCreateTextures(Type, 1, &ID);
     
     glTextureParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTextureParameteri(ID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -308,9 +313,10 @@ CreateDepthCubemapTexture(u32 Width, u32 Height, GLenum InternalFormat) {
     glTextureParameteri(ID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTextureParameteri(ID, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     
-    glTextureStorage2D(ID, 1, InternalFormat, Width, Height);
+    glTextureStorage3D(ID, 1, InternalFormat, Width, Height, Depth);
     return ID;
 }
+
 
 static void
 AddFramebufferTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
@@ -323,16 +329,8 @@ AddFramebufferTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
 }
 
 static void
-AddFramebufferDepthTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
-    GLuint Texture = CreateDepthTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat);
-    Framebuffer->DepthTarget = Texture;
-    glNamedFramebufferTexture(Framebuffer->ID, GL_DEPTH_ATTACHMENT, Framebuffer->DepthTarget, 0);
-}
-
-static void
-AddFramebufferDepthCubemapTexture(framebuffer* Framebuffer, GLenum InternalFormat) {
-    GLuint Texture = CreateDepthCubemapTexture(Framebuffer->Width, Framebuffer->Height, InternalFormat);
-    Framebuffer->DepthTarget = Texture;
+AddFramebufferDepthTexture(framebuffer* Framebuffer, GLuint ID) {
+    Framebuffer->DepthTarget = ID;
     glNamedFramebufferTexture(Framebuffer->ID, GL_DEPTH_ATTACHMENT, Framebuffer->DepthTarget, 0);
 }
 
@@ -371,14 +369,16 @@ CreateTexture(gltf_texture GLTFTexture) {
     
     glTextureParameteri(ID, GL_TEXTURE_WRAP_S, WrapFilter);
     glTextureParameteri(ID, GL_TEXTURE_WRAP_T, WrapFilter);
-    glTextureParameteri(ID, GL_TEXTURE_MIN_FILTER, Filter);
-    glTextureParameteri(ID, GL_TEXTURE_MAG_FILTER, Filter);
-    glGenerateTextureMipmap(ID);
+    glTextureParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+    glTextureParameteri(ID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     
-    glTextureStorage2D(ID, 1, InternalFormat, Width, Height);
+    u32 MipmapLevel = (u32)log2(Max((f32)Width, (f32)Height));
+    
+    glTextureStorage2D(ID, Max(MipmapLevel, 1), InternalFormat, Width, Height);
     if(GLTFTexture.Data) {
         glTextureSubImage2D(ID, 0, 0, 0, Width, Height, Format, GL_UNSIGNED_BYTE, GLTFTexture.Data);
     }
+    glGenerateTextureMipmap(ID);
     
     return ID;
 }

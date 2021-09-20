@@ -18,6 +18,7 @@ struct directional_light {
 
 struct point_light {
     vec3 Position;
+    float Radius;
     vec3 Color;
 };
 
@@ -34,5 +35,16 @@ struct draw_uniform {
     vec4 Color;
     
     mat4 ModelProj;
+};
+
+struct gbuffer_result {
+    
+    vec3 Albedo;
+    vec3 Normal;
+    vec3 Position;
+    float Roughness;
+    float Metallic;
+    float Emission;
+    float Shadowed;
 };
 

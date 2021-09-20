@@ -62,15 +62,16 @@ struct directional_light {
 struct point_light {
     
     v3 Position;
-    float Pad;
+    float Radius;
     v3 Color;
     float Pad0;
 };
 
+#define MAX_POINT_LIGHTS 4
 struct frame_uniforms {
     m4x4 CameraProj;
     m4x4 LightProj;
-    point_light PointLight[4];
+    point_light PointLight[MAX_POINT_LIGHTS];
     directional_light SunLight;
     v3 CameraP;
     u32 FramebufferTextureToDisplay;
@@ -81,6 +82,7 @@ struct frame_uniforms {
 #define MAX_INDIRECT_COMMANDS 65536
 #define MAX_TEXTURE_HANDLES 1024
 #define MAX_MESH_HANDLES 512
+#define CASCADE_COUNT 3
 
 struct mesh_geometry_buffers {
     GLuint VAO;
@@ -129,11 +131,13 @@ struct gl_context {
     
     framebuffer ShadowmapFramebuffer;
     framebuffer CubeShadowmapFramebuffer;
+    framebuffer SunlightFramebuffer;
     framebuffer GBufferFramebuffer;
     framebuffer ResolveFramebuffer;
     
     shader ShadowmapShader;
     shader PointLightShadowShader;
+    shader CascadeShadowmapShader;
     shader SkyboxShader;
     shader GBufferShader;
     shader ResolveShader;
@@ -318,6 +322,7 @@ InitializeOpenGLScene(app_memory* Memory, u32 WindowWidth, u32 WindowHeight) {
     glCreateBuffers(1, &OpenGL->TextureHandleBuffer);
     glNamedBufferStorage(OpenGL->TextureHandleBuffer, sizeof(OpenGL->TextureHandles), NULL, GL_DYNAMIC_STORAGE_BIT);
     
+    
     glCreateBuffers(1, &OpenGL->DrawUniformBuffer);
     glNamedBufferData(OpenGL->DrawUniformBuffer, sizeof(per_draw_uniforms)*MAX_DRAWS_PER_BATCH, NULL, GL_DYNAMIC_DRAW);
     
@@ -325,13 +330,14 @@ InitializeOpenGLScene(app_memory* Memory, u32 WindowWidth, u32 WindowHeight) {
     glNamedBufferData(OpenGL->FrameUniformBuffer, sizeof(frame_uniforms), NULL, GL_DYNAMIC_DRAW);
     
     OpenGL->GBufferFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
-    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA8);
-    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA8);
-    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA16F);
-    AddFramebufferDepthTexture(&OpenGL->GBufferFramebuffer, GL_DEPTH_COMPONENT16);
+    
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA32F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA32F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA32F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA32F);
+    AddFramebufferTexture(&OpenGL->GBufferFramebuffer, GL_RGBA32F);
+    GLuint GBufferDepth = CreateDepthTexture(OpenGL->RenderWidth, OpenGL->RenderHeight, GL_DEPTH_COMPONENT16, GL_TEXTURE_2D);
+    AddFramebufferDepthTexture(&OpenGL->GBufferFramebuffer, GBufferDepth);
     EndFramebufferCreation(&OpenGL->GBufferFramebuffer);
     
     OpenGL->ResolveFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
@@ -344,14 +350,20 @@ InitializeOpenGLScene(app_memory* Memory, u32 WindowWidth, u32 WindowHeight) {
     Memory->Scene.GeneratedCubeID = RegisterGeneratedMesh(&CubeMesh);
     
     OpenGL->ShadowmapFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
-    AddFramebufferDepthTexture(&OpenGL->ShadowmapFramebuffer, GL_DEPTH_COMPONENT16);
+    GLuint ShadowmapDepth = CreateDepthTexture(OpenGL->RenderWidth, OpenGL->RenderHeight, GL_DEPTH_COMPONENT32F, GL_TEXTURE_2D);
+    AddFramebufferDepthTexture(&OpenGL->ShadowmapFramebuffer, ShadowmapDepth);
     EndFramebufferCreation(&OpenGL->ShadowmapFramebuffer);
     
-#if 1
+    
     OpenGL->CubeShadowmapFramebuffer = CreateFramebuffer(1024, 1024);
-    AddFramebufferDepthCubemapTexture(&OpenGL->CubeShadowmapFramebuffer, GL_DEPTH_COMPONENT16);
+    GLuint CubeDepth = Create3DDepthTexture(1024, 1024, MAX_POINT_LIGHTS*6, GL_DEPTH_COMPONENT32F, GL_TEXTURE_CUBE_MAP_ARRAY);
+    AddFramebufferDepthTexture(&OpenGL->CubeShadowmapFramebuffer, CubeDepth);
     EndFramebufferCreation(&OpenGL->CubeShadowmapFramebuffer);
-#endif
+    
+    OpenGL->SunlightFramebuffer = CreateFramebuffer(2048, 2048);
+    GLuint SunDepth = Create3DDepthTexture(2048, 2048, CASCADE_COUNT, GL_DEPTH_COMPONENT32F, GL_TEXTURE_2D_ARRAY);
+    AddFramebufferDepthTexture(&OpenGL->SunlightFramebuffer, SunDepth);
+    EndFramebufferCreation(&OpenGL->SunlightFramebuffer);
     
     u8 WhiteBitmapData[4];
     WhiteBitmapData[0] = 255;
@@ -415,9 +427,12 @@ GenerateDirectionLightProj(directional_light Light) {
 
 
 static void
-GeneratePointLightProj(v3 P, m4x4* ProjArray) {
+GeneratePointLightProj(point_light Light,  m4x4* ProjArray) {
     
-    m4x4 LightProj = PerspectiveProjection(1, Radians(90.0), 0.1, 10.0).Forward;
+    v3 P = Light.Position;
+    float FarPlane = Light.Radius;
+    
+    m4x4 LightProj = PerspectiveProjection(1, Radians(90.0), 0.1, FarPlane).Forward;
     
     ProjArray[0] = LightProj * LookAt(P, P + V3(1, 0, 0), V3(0, -1, 0)).Forward;
     ProjArray[1] = LightProj * LookAt(P, P + V3(-1, 0, 0), V3(0, -1, 0)).Forward;
@@ -681,6 +696,7 @@ UpdateAndRender(app_memory* Memory) {
         OpenGL->ShadowmapShader = LoadShader(Memory, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
         OpenGL->SkyboxShader = LoadShader(Memory, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
         OpenGL->PointLightShadowShader = LoadShader(Memory, "gl_shaders/point_light_shadow.vert", "gl_shaders/point_light_shadow.frag", "gl_shaders/point_light_shadow.geom");
+        OpenGL->CascadeShadowmapShader = LoadShader(Memory, "gl_shaders/cascade_shadowmap.vert", "gl_shaders/cascade_shadowmap.frag", "gl_shaders/cascade_shadowmap.geom");
     }
     
     MaybeReloadShader(Memory, &OpenGL->GBufferShader, "gl_shaders/gbuffer.vert", "gl_shaders/gbuffer.frag", 0);
@@ -688,24 +704,30 @@ UpdateAndRender(app_memory* Memory) {
     MaybeReloadShader(Memory, &OpenGL->ShadowmapShader, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
     MaybeReloadShader(Memory, &OpenGL->SkyboxShader, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
     MaybeReloadShader(Memory, &OpenGL->PointLightShadowShader, "gl_shaders/point_light_shadow.vert", "gl_shaders/point_light_shadow.frag", "gl_shaders/point_light_shadow.geom");
+    MaybeReloadShader(Memory, &OpenGL->CascadeShadowmapShader, "gl_shaders/cascade_shadowmap.vert", "gl_shaders/cascade_shadowmap.frag", "gl_shaders/cascade_shadowmap.geom");
     
     UpdateCamera(&Memory->Scene.Camera);
     
     point_light Lights[4] = {};
-    Lights[0].Position = V3(0, 1, 0);
-    Lights[0].Color = V3(0.9, 0.9, 0.9);
+    Lights[0].Position = V3(0, 2, 0);
+    Lights[0].Radius = 5.0f;
+    Lights[0].Color = V3(0.9, 0.1, 0.1);
+    
+#if 1
+    Lights[1].Position = V3(2, 2, 0);
+    Lights[1].Radius = 5.0f;
+    Lights[1].Color = V3(0.1, 0.9, 0.1);
     
     
-    Lights[1].Position = V3(0, 1, 0);
-    Lights[1].Color = V3(0.9, 0.9, 0.9);
-    
-    
-    Lights[2].Position = V3(0, 1, 0);
-    Lights[2].Color = V3(0.9, 0.9, 0.9);
+    Lights[2].Position = V3(-2, 2, 0);
+    Lights[2].Radius = 5.0f;
+    Lights[2].Color = V3(0.1, 0.1, 0.9);
     
     
     Lights[3].Position = V3(0, 1, 0);
+    Lights[3].Radius = 5.0f;
     Lights[3].Color = V3(0.9, 0.9, 0.9);
+#endif
     
     
     directional_light SunLight = {};
@@ -758,25 +780,34 @@ UpdateAndRender(app_memory* Memory) {
     
     
     {
-        m4x4 CubeShadowProj[6] = {};
-        
-        point_light Light = OpenGL->FrameUniforms.PointLight[0];
-        
-        GeneratePointLightProj(Light.Position, CubeShadowProj);
         
         glBindVertexArray(OpenGL->MeshInfo.VAO);
-        
         GLuint Shader = OpenGL->PointLightShadowShader.ID;
         glUseProgram(Shader);
+        
+        m4x4 CubeShadowProj[6*MAX_POINT_LIGHTS] = {};
+        v3 LightPArray[MAX_POINT_LIGHTS] = {};
+        f32 LightFarPlaneArray[MAX_POINT_LIGHTS] = {};
+        
+        for(u32 I = 0;
+            I < MAX_POINT_LIGHTS;
+            I++) {
+            
+            point_light Light = OpenGL->FrameUniforms.PointLight[I];
+            LightPArray[I] = Light.Position;
+            LightFarPlaneArray[I] = Light.Radius;
+            GeneratePointLightProj(Light, &CubeShadowProj[I*6]);
+        }
+        
+        
         glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->CubeShadowmapFramebuffer.ID);
         glViewport(0, 0, OpenGL->CubeShadowmapFramebuffer.Width, OpenGL->CubeShadowmapFramebuffer.Height);
         glScissor(0, 0, OpenGL->CubeShadowmapFramebuffer.Width, OpenGL->CubeShadowmapFramebuffer.Height);
         glClear(GL_DEPTH_BUFFER_BIT);
         
-        
-        glUniformMatrix4fv(glGetUniformLocation(Shader, "ShadowMatrices"), 6, GL_TRUE, (GLfloat*)&CubeShadowProj[0]);
-        glUniform3f(glGetUniformLocation(Shader, "LightP"), Light.Position.x, Light.Position.y, Light.Position.z);
-        glUniform1f(glGetUniformLocation(Shader, "FarPlane"), 10.0f);
+        glUniformMatrix4fv(glGetUniformLocation(Shader, "ShadowMatrices"), 6*MAX_POINT_LIGHTS, GL_TRUE, (GLfloat*)&CubeShadowProj);
+        glUniform3fv(glGetUniformLocation(Shader, "LightP"), MAX_POINT_LIGHTS, (GLfloat*)&LightPArray);
+        glUniform1fv(glGetUniformLocation(Shader, "FarPlane"), MAX_POINT_LIGHTS, (GLfloat*)&LightFarPlaneArray);
         
         //glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
@@ -784,6 +815,8 @@ UpdateAndRender(app_memory* Memory) {
         
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
     }
+    
+    
     
     {
         
@@ -820,7 +853,7 @@ UpdateAndRender(app_memory* Memory) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, OpenGL->ShadowmapFramebuffer.DepthTarget);
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, OpenGL->CubeShadowmapFramebuffer.DepthTarget);
+        glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, OpenGL->CubeShadowmapFramebuffer.DepthTarget);
         
         glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "TextureArray"), OpenGL->TextureHandleBuffer);
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, OpenGL->IndirectCommandBuffer);
@@ -835,7 +868,6 @@ UpdateAndRender(app_memory* Memory) {
     
     
     {
-        
         
         glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->ResolveFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
@@ -886,10 +918,8 @@ UpdateAndRender(app_memory* Memory) {
         glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[3]);
         glActiveTexture(GL_TEXTURE4);
         glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[4]);
-        glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[5]);
-        glActiveTexture(GL_TEXTURE6);
-        glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.DepthTarget);
+        //glActiveTexture(GL_TEXTURE5);
+        //glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.DepthTarget);
         
         glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), OpenGL->FrameUniformBuffer);
         
