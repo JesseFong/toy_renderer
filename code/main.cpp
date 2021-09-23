@@ -11,6 +11,8 @@
 #include "opengl.cpp"
 #include "draw.cpp"
 
+#include "glm/glm.hpp"
+
 global_variable u32 GLOBALWindowWidth  = 1600;
 global_variable u32 GLOBALWindowHeight = 900;
 

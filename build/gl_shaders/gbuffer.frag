@@ -28,12 +28,35 @@ layout(location=4) out vec4 OutShadow; //Shadow, Point Light Depth
 
 layout(binding = 0)uniform sampler2D InShadowmap;
 layout(binding = 1)uniform samplerCubeArray InCubeShadowmap;
+layout(binding = 2)uniform sampler2DArray InCascadeShadowmap;
+
+uniform mat4 CascadeProjs[4];
+uniform float CascadeDepths[4];
 
 in vec2 UV;
 in vec3 WorldPosition;
 in vec3 Normal;
 in vec4 FragFromLight;
+in float ClipSpaceZ;
+in vec4 LightSpacePos[4];
 flat in uint DrawID;
+
+float ComputeCascadeShadow(int CascadeIndex , vec4 LightSpacePosition) {
+    
+    vec3 ProjCoords = LightSpacePosition.xyz / LightSpacePosition.w;
+    
+    vec2 UV;
+    UV.x = 0.5 * ProjCoords.x + 0.5;
+    UV.y = 0.5 * ProjCoords.y + 0.5;
+    
+    float CurrentDepth = 0.5 * ProjCoords.z + 0.5;
+    float ClosestDepth = texture(InCascadeShadowmap, vec3(UV, CascadeIndex)).r;
+    
+    float Bias = 0.05;
+    float Shadow = (CurrentDepth - Bias) > ClosestDepth ? 1.0 : 0.0;
+    
+    return Shadow;
+}
 
 
 float ComputePointLightShadow(vec3 FragP, vec3 LightP, float r, int LightIndex) {
@@ -111,6 +134,24 @@ void main()
     }
     FragShadowed /= 3;
     
+    float CascadeShadow = 0;
+    for(int i = 0; i < 4; i++) {
+        if(ClipSpaceZ <= CascadeDepths[i]) {
+            CascadeShadow = ComputeCascadeShadow(i, LightSpacePos[i]);
+            
+            if(i == 0) {
+                FragColor *= vec4(1, 0, 0, 1);
+            } else if(i == 1) {
+                FragColor *= vec4(0, 1, 0, 1);
+            } else if(i == 2) {
+                FragColor *= vec4(0, 0, 1, 1);
+            } else if(i == 3) {
+                FragColor *= vec4(1, 0, 1, 1);
+            }
+            break;
+        }
+    }
+    
     vec4 FragPosition = vec4(WorldPosition, 1);
     
     OutC = FragColor;
@@ -120,5 +161,5 @@ void main()
     vec4 MaterialCombined = vec4(FragRoughness, FragMetallic, FragEmission, 1);
     OutRME = MaterialCombined;
     
-    OutShadow = vec4(FragShadowed, 1, 1, 1);
+    OutShadow = vec4(FragShadowed, CascadeShadow, 1, 1);
 }

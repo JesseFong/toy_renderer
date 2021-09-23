@@ -98,6 +98,8 @@ struct gltf_model {
     
     gltf_material* MaterialArray;
     u32 MaterialCount;
+    
+    rectangle3 BoundingBox;
 };
 
 
@@ -537,11 +539,11 @@ LoadGLTFMesh(cgltf_data* Data, gltf_model* OutModel, cgltf_mesh* Mesh, f32* Node
                 //TODO(Jesse): Transform vertices by the node matrix
                 
                 WritingMesh->P = (v3*)WriteGLTFFloatsToBuffer(Accessor, cgltf_component_type_r_32f);
-                
                 for(u32 I = 0;
                     I < WritingMesh->VertexCount;
                     I++) {
                     WritingMesh->P[I] = *((m4x4*)NodeMatrixTransform)*WritingMesh->P[I];
+                    OutModel->BoundingBox = UnionPoint(OutModel->BoundingBox, WritingMesh->P[I]);
                 }
                 
             } else if(AttributeType == cgltf_attribute_type_normal) {
@@ -633,9 +635,10 @@ LoadGLTF(gltf_loader_settings* Settings = NULL) {
     char* SponzaDirectory = "Sponza/glTF";
     
     strcpy(GLTFCurrentDirectory, SponzaDirectory);
+    char* Filename = "Sponza/glTF/Sponza.gltf"; 
     
     gltf_model Result = {};
-    char* Filename = "Sponza/glTF/Sponza.gltf";
+    Result.BoundingBox = InvertedInfinityRectangle3();
     cgltf_options options = {0};
     cgltf_data* data = NULL;
     cgltf_result result = cgltf_parse_file(&options, Filename, &data);

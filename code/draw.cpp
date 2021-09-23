@@ -60,7 +60,6 @@ struct directional_light {
 };
 
 struct point_light {
-    
     v3 Position;
     float Radius;
     v3 Color;
@@ -82,7 +81,7 @@ struct frame_uniforms {
 #define MAX_INDIRECT_COMMANDS 65536
 #define MAX_TEXTURE_HANDLES 1024
 #define MAX_MESH_HANDLES 512
-#define CASCADE_COUNT 3
+#define CASCADE_COUNT 4
 
 struct mesh_geometry_buffers {
     GLuint VAO;
@@ -457,6 +456,96 @@ SetProjection(camera* Camera) {
     return Proj;
 }
 
+static void
+GetFrustrumCornersWorldSpace(m4x4 InvProj, v4* CornersOut) {
+    
+    u32 CornerIndex = 0;
+    for(u32 X = 0;X < 2;X++) {
+        for(u32 Y = 0;Y < 2;Y++) {
+            for(u32 Z = 0; Z < 2; Z++) {
+                
+                v4 Point = InvProj * V4(2.0f*X - 1.0f, 2.0f*Y - 1.0f, 2.0f*Z - 1.0f, 1.0f);
+                
+                CornersOut[CornerIndex++] = Point / Point.w; 
+            }
+        }
+    }
+}
+
+static m4x4
+GetCascadeLightSpaceMatrix(directional_light Light, rectangle3 BoundingBox, camera* Camera, f32 NearPlane, f32 FarPlane) {
+    
+    f32 AspectWidthOverHeight = (f32)OpenGL->RenderWidth/(f32)OpenGL->RenderHeight;
+    
+    m4x4_inv ProjInv = PerspectiveProjection(AspectWidthOverHeight, Camera->FOV, NearPlane, FarPlane);
+    m4x4_inv CameraXForm = CameraTransform(Camera->XAxis, Camera->YAxis, Camera->ZAxis, Camera->P);
+    
+    m4x4_inv Proj;
+    Proj.Forward = ProjInv.Forward * CameraXForm.Forward;
+    Proj.Inverse = CameraXForm.Inverse * ProjInv.Inverse;
+    
+    v4 Corners[8] = {};
+    GetFrustrumCornersWorldSpace(Proj.Inverse, Corners); 
+    
+    
+    v3 Center = {};
+    for(u32 I = 0;
+        I < 8;
+        I++) {
+        
+        Center += Corners[I].xyz;
+    }
+    Center /= 8;
+    
+    m4x4_inv LightViewMatrix = LookAt(Center + Light.Direction, Center, V3(0, 1, 0));
+    
+    f32 MinX = F32MAX;
+    f32 MaxX = F32MIN;
+    f32 MinY = F32MAX;
+    f32 MaxY = F32MIN;
+    f32 MinZ = F32MAX;
+    f32 MaxZ = F32MIN;
+    
+    for(u32 I = 0; I < 8; I++) {
+        
+        v4 Test = LightViewMatrix.Forward * Corners[I];
+        MinX = Min(MinX, Test.x);
+        MaxX = Max(MaxX, Test.x);
+        MinY = Min(MinY, Test.y);
+        MaxY = Max(MaxY, Test.y);
+        MinZ = Min(MinZ, Test.z);
+        MaxZ = Max(MaxZ, Test.z);
+    }
+    
+    f32 ZMuliplier = 2.0f;
+    if(MinZ < 0.0f) {
+        MinZ *= ZMuliplier;
+    } else {
+        MinZ /= ZMuliplier;
+    }
+    if(MaxZ < 0.0f) {
+        MaxZ /= ZMuliplier;
+    } else {
+        MaxZ *= ZMuliplier;
+    }
+    
+    m4x4_inv LightOrthoMatrix = OrthographicProjection(V2(MinX, MaxX), V2(BoundingBox.Min.y, BoundingBox.Max.y), V2(MinZ, MaxZ));
+    
+    f32 ScaleX = 2.0f / (MaxX - MinX);
+    f32 ScaleY = 2.0f / (MaxY - MinY);
+    f32 OffsetX = -0.5f * (MinX + MaxX) * ScaleX;
+    f32 OffsetY = -0.5f * (MinY + MaxY) * ScaleY;
+    
+    m4x4 CropMatrix = M4x4Identity();
+    CropMatrix.E[0][0] = ScaleX;
+    //CropMatrix.E[1][1] = ScaleY;
+    CropMatrix.E[0][3] = OffsetX;
+    //CropMatrix.E[1][3] = OffsetY;
+    
+    m4x4 Result = LightOrthoMatrix.Forward * LightViewMatrix.Forward;
+    return Result;
+}
+
 static camera_update_params
 UpdateCamera(camera* Camera) {
     mouse_input* MouseInput = &GLOBALPlatformState->Input.Mouse;
@@ -571,7 +660,7 @@ InitializeScene(app_memory* Memory) {
     
     scene* Scene = &Memory->Scene;
     
-    Scene->Camera = InitializeCamera(CameraP, ZAxis, Up, FOV, 0.1f, 1000.0f);
+    Scene->Camera = InitializeCamera(CameraP, ZAxis, Up, FOV, 0.1f, 50.0f);
     
     u32 MeshCount = Scene->LoadedModel.MeshCount;
     
@@ -731,7 +820,7 @@ UpdateAndRender(app_memory* Memory) {
     
     
     directional_light SunLight = {};
-    SunLight.Direction = Normalize(V3(0.3, 1, 0));
+    SunLight.Direction = Normalize(V3(0.3, 1, 0.1));
     SunLight.Color = V3(0.8, 0.8, 0.2);
     
     m4x4_inv SunLightProj = GenerateDirectionLightProj(SunLight);
@@ -817,6 +906,46 @@ UpdateAndRender(app_memory* Memory) {
     }
     
     
+    camera* Camera = &Memory->Scene.Camera;
+    m4x4 SunLightCascadeProj[CASCADE_COUNT] = {};
+    float ShadowCascades[] = {Camera->FarClip /15.0f, Camera->FarClip /5.0f, Camera->FarClip /2.0f};
+    {
+        
+        //glCullFace(GL_FRONT);
+        for(u32 I = 0;
+            I < CASCADE_COUNT;
+            I++) {
+            
+            if(I == 0) {
+                SunLightCascadeProj[I] = GetCascadeLightSpaceMatrix(SunLight, Memory->Scene.LoadedModel.BoundingBox, Camera, Camera->NearClip, ShadowCascades[I]);
+            } else if(I < CASCADE_COUNT - 1) {
+                SunLightCascadeProj[I] = GetCascadeLightSpaceMatrix(SunLight,Memory->Scene.LoadedModel.BoundingBox, Camera, ShadowCascades[I-1], ShadowCascades[I]);
+            } else {
+                SunLightCascadeProj[I] = GetCascadeLightSpaceMatrix(SunLight,Memory->Scene.LoadedModel.BoundingBox, Camera, ShadowCascades[I-1], Camera->FarClip);
+            }
+        }
+        
+        GLuint Shader = OpenGL->CascadeShadowmapShader.ID;
+        glUseProgram(Shader);
+        
+        framebuffer Framebuffer = OpenGL->SunlightFramebuffer;
+        glBindFramebuffer(GL_FRAMEBUFFER, Framebuffer.ID);
+        glViewport(0, 0, Framebuffer.Width, Framebuffer.Height);
+        glScissor(0, 0, Framebuffer.Width, Framebuffer.Height);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        
+        
+        glUniformMatrix4fv(glGetUniformLocation(Shader, "LightSpaceMatrices"), CASCADE_COUNT, GL_TRUE, (GLfloat*)&SunLightCascadeProj);
+        glBindVertexArray(OpenGL->MeshInfo.VAO);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
+        
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
+        
+        glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
+        
+        //glCullFace(GL_BACK);
+    }
+    
     
     {
         
@@ -829,7 +958,6 @@ UpdateAndRender(app_memory* Memory) {
         glClear(GL_DEPTH_BUFFER_BIT);
         
         glBindVertexArray(OpenGL->MeshInfo.VAO);
-        
         glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "FrameUniforms"), OpenGL->FrameUniformBuffer);
         
         //glNamedBufferSubData(DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, DrawUniformArray);
@@ -854,6 +982,11 @@ UpdateAndRender(app_memory* Memory) {
         glBindTexture(GL_TEXTURE_2D, OpenGL->ShadowmapFramebuffer.DepthTarget);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, OpenGL->CubeShadowmapFramebuffer.DepthTarget);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, OpenGL->SunlightFramebuffer.DepthTarget);
+        
+        glUniformMatrix4fv(glGetUniformLocation(Shader, "CascadeProjs"), 4, GL_TRUE, (GLfloat*)&SunLightCascadeProj);
+        glUniform1fv(glGetUniformLocation(Shader, "CascadeDepths"), 4, ShadowCascades);
         
         glBindBufferBase(GL_UNIFORM_BUFFER, glGetUniformBlockIndex(Shader, "TextureArray"), OpenGL->TextureHandleBuffer);
         glBindBuffer(GL_DRAW_INDIRECT_BUFFER, OpenGL->IndirectCommandBuffer);

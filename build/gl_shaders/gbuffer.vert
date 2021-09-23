@@ -24,10 +24,15 @@ layout(location = 1)in vec2 VtxUV;
 layout(location = 2)in vec3 VtxNormal;
 layout(location = 3)in uint VtxDrawID;
 
+uniform mat4 CascadeProjs[4];
+uniform float CascadeDepths[4];
+
 out vec2 UV;
 out vec3 WorldPosition;
 out vec3 Normal;
 out vec4 FragFromLight;
+out float ClipSpaceZ;
+out vec4 LightSpacePos[4];
 out uint DrawID;
 
 void main() 
@@ -35,6 +40,11 @@ void main()
     DrawID = VtxDrawID;
     mat4 Model = DrawUniformArray[DrawID].ModelProj;
     vec4 Position = CameraProj * Model * vec4(VtxPosition, 1.0f);
+    
+    for(int i = 0; i < 4; i++) {
+        LightSpacePos[i] = CascadeProjs[i] * vec4(VtxPosition, 1.0f);
+    }
+    ClipSpaceZ = Position.z;
     
     UV = VtxUV;
     WorldPosition = (Model * vec4(VtxPosition, 1.0)).xyz;

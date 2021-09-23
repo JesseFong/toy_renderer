@@ -46,5 +46,5 @@ struct gbuffer_result {
     float Metallic;
     float Emission;
     float Shadowed;
+    float SunShadow;
 };
-

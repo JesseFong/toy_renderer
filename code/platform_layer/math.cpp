@@ -904,18 +904,6 @@ RectanglesIntersect(rectangle2 A, rectangle2 B) {
     return Result;
 }
 
-inline rectangle2
-Unionize(rectangle2 A, rectangle2 B) {
-    rectangle2 Result;
-    
-    Result.Min.x = (A.Min.x < B.Min.x) ? A.Min.x : B.Min.x;
-    Result.Min.y = (A.Min.y < B.Min.y) ? A.Min.y : B.Min.y;
-    Result.Max.x = (A.Max.x > B.Max.x) ? A.Max.x : B.Max.x;
-    Result.Max.y = (A.Max.y > B.Max.y) ? A.Max.y : B.Max.y;
-    
-    return Result;
-}
-
 inline v2
 GetBarycentric(rectangle2 A, v2 P) {
     v2 Result;
@@ -966,6 +954,14 @@ GetDim(rectangle3 Rect) {
 inline v3
 GetCenter(rectangle3 Rect) {
     v3 Result = 0.5f*(Rect.Min + Rect.Max);
+    return Result;
+}
+
+inline rectangle3
+InvertedInfinityRectangle3() {
+    rectangle3 Result = {};
+    Result.Min.x = Result.Min.y = Result.Min.z = F32MAX;
+    Result.Max.x = Result.Max.y = Result.Max.z = F32MIN;
     return Result;
 }
 
@@ -1022,6 +1018,20 @@ Offset(rectangle3 A, v3 Offset) {
 inline rectangle3
 RectCenterDim(v3 Center, v3 Dim) {
     rectangle3 Result = RectCenterHalfDim(Center, 0.5f*Dim);
+    
+    return Result;
+}
+
+inline rectangle3
+UnionPoint(rectangle3 Rect, v3 Point) {
+    rectangle3 Result = {};
+    
+    Result.Min.x = (Point.x < Rect.Min.x) ? Point.x : Rect.Min.x;
+    Result.Max.x = (Point.x > Rect.Max.x) ? Point.x : Rect.Max.x;
+    Result.Min.y = (Point.y < Rect.Min.y) ? Point.y : Rect.Min.y;
+    Result.Max.y = (Point.y > Rect.Max.y) ? Point.y : Rect.Max.y;
+    Result.Min.z = (Point.z < Rect.Min.z) ? Point.z : Rect.Min.z;
+    Result.Max.z = (Point.z > Rect.Max.z) ? Point.z : Rect.Max.z;
     
     return Result;
 }
@@ -1596,11 +1606,11 @@ OrthographicProjection(v2 BoundingX, v2 BoundingY, v2 BoundingZ) {
     
     f32 A  = 2.0f/(r-l);
     f32 B  = 2.0f/(t-b);
-    f32 C  = 2.0f/(n-f);
+    f32 C  = -2.0f/(f-n);
     
     f32 X = -(r+l)/(r-l);
     f32 Y = -(t+b)/(t-b);
-    f32 Z = -(f+n)/(n-f);
+    f32 Z = -(f+n)/(f-n);
     
     m4x4_inv Result;
     Result.Forward = 

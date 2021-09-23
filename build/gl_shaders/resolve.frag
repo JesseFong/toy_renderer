@@ -126,6 +126,7 @@ ExtractGBufferMaterials() {
     Result.Metallic = G3.g;
     Result.Emission = G3.b;
     Result.Shadowed = G4.r;
+    Result.SunShadow = G4.g;
     
     return Result;
 };
@@ -143,6 +144,7 @@ void main()
     F0 = mix(F0, Frag.Albedo, Frag.Metallic);
     
     vec3 LightContribution = vec3(0, 0, 0);
+#if 1
     for(int i = 0; i < 3; i++) {
         point_light Light = PointLight[i];
         
@@ -153,8 +155,14 @@ void main()
             LightContribution += ThisLightContribution;
         }
     }
+#endif
     
-    //LightContribution += CalculateDirectionalLight(SunLight, N, V, Frag.Albedo, F0, Frag.Roughness, Frag.Metallic);
+#if 1
+    vec3 SunLightContribution = CalculateDirectionalLight(SunLight, N, V, Frag.Albedo, F0, Frag.Roughness, Frag.Metallic);
+    SunLightContribution *= (1 - Frag.SunShadow);
+    LightContribution += SunLightContribution;
+    
+#endif
     
     vec3 Ambient = vec3(0.03) * Frag.Albedo;
     
