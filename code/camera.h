@@ -17,6 +17,7 @@ struct camera {
     m4x4 Rotation;
     f32 NearClip;
     f32 FarClip;
+    m4x4_inv Proj;
 };
 
 struct camera_update_params {

@@ -1,14 +1,4 @@
 
-layout(std140, row_major, binding=0)uniform FrameUniforms 
-{
-    mat4 CameraProj;
-    mat4 LightProj;
-    point_light PointLight[4];
-    directional_light SunLight;
-    vec3 CameraP;
-    uint FrambufferTextureToDisplay;
-};
-
 
 layout(binding = 0)uniform sampler2D InG0;
 layout(binding = 1)uniform sampler2D InG1;
@@ -145,7 +135,7 @@ void main()
     
     vec3 LightContribution = vec3(0, 0, 0);
 #if 1
-    for(int i = 0; i < 3; i++) {
+    for(int i = 0; i < 4; i++) {
         point_light Light = PointLight[i];
         
         float Distance = length(Light.Position - Frag.Position);

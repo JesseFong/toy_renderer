@@ -1,9 +1,4 @@
 
-layout(std430, row_major) buffer DrawUniforms
-{
-    draw_uniform DrawUniformArray[];
-};
-
 layout(location = 0)in vec3 VtxPosition;
 layout(location = 3)in uint VtxDrawID;
 

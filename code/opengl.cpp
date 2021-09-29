@@ -71,9 +71,11 @@ GL_DEBUG_CALLBACK(OpenGLDebugMessageCallback) {
         case GL_DEBUG_SEVERITY_NOTIFICATION:_Severity = "NOTIFICATION";break;
         default:_Severity = "UNKNOWN";break;
     }
-    char* Out = FormatString("%d: %s of %s severity, raised from %s: %s\n",
-                             ID, _Type, _Severity, _Source, Message);
-    DebugOut(Out);
+    if(Severity != GL_DEBUG_SEVERITY_NOTIFICATION) {
+        char* Out = FormatString("%d: %s of %s severity, raised from %s: %s\n",
+                                 ID, _Type, _Severity, _Source, Message);
+        DebugOut(Out);
+    }
 }
 
 global_variable f32 GLOBALScreenQuadVertices[] = {

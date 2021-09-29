@@ -17,6 +17,7 @@
 
 */
 
+
 enum shader_flags {
     SHADER_FLAG_NONE = 0,
     SHADER_FLAG_USE_COLOR = 1 << 0,
@@ -52,20 +53,6 @@ struct per_draw_uniforms {
     m4x4 ModelProj;
 };
 
-struct directional_light {
-    v3 Direction;
-    float Pad;
-    v3 Color;
-    float Pad1;
-};
-
-struct point_light {
-    v3 Position;
-    float Radius;
-    v3 Color;
-    float Pad0;
-};
-
 #define MAX_POINT_LIGHTS 4
 struct frame_uniforms {
     m4x4 CameraProj;
@@ -96,6 +83,12 @@ struct mesh_geometry_buffers {
     
     u32 CurrentVertexCount;
     u32 CurrentIndexCount;
+};
+
+struct immediate_info {
+    v3 P;
+    v2 UV;
+    v4 Color;
 };
 
 struct gl_context {
@@ -132,7 +125,8 @@ struct gl_context {
     framebuffer CubeShadowmapFramebuffer;
     framebuffer SunlightFramebuffer;
     framebuffer GBufferFramebuffer;
-    framebuffer ResolveFramebuffer;
+    framebuffer LightingResolveFramebuffer;
+    framebuffer FinalResolveFramebuffer;
     
     shader ShadowmapShader;
     shader PointLightShadowShader;
@@ -140,9 +134,12 @@ struct gl_context {
     shader SkyboxShader;
     shader GBufferShader;
     shader ResolveShader;
+    shader DisplayGbufferShader;
 };
 
 gl_context* OpenGL = NULL;
+
+point_light ScenePointLights[4];
 
 static void
 InitializeMeshInfo() {
@@ -232,6 +229,7 @@ InitializeCubemapInfo() {
     glEnableVertexArrayAttrib(OpenGL->CubemapVAO, 0);
     glVertexArrayAttribFormat(OpenGL->CubemapVAO, 0, 3, GL_FLOAT, GL_FALSE, 0);
     glVertexArrayAttribBinding(OpenGL->CubemapVAO, 0, 0);
+    
 }
 
 static u32
@@ -339,9 +337,13 @@ InitializeOpenGLScene(app_memory* Memory, u32 WindowWidth, u32 WindowHeight) {
     AddFramebufferDepthTexture(&OpenGL->GBufferFramebuffer, GBufferDepth);
     EndFramebufferCreation(&OpenGL->GBufferFramebuffer);
     
-    OpenGL->ResolveFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
-    AddFramebufferTexture(&OpenGL->ResolveFramebuffer, GL_RGBA8);
-    EndFramebufferCreation(&OpenGL->ResolveFramebuffer);
+    OpenGL->LightingResolveFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
+    AddFramebufferTexture(&OpenGL->LightingResolveFramebuffer, GL_RGBA8);
+    EndFramebufferCreation(&OpenGL->LightingResolveFramebuffer);
+    
+    OpenGL->FinalResolveFramebuffer = CreateFramebuffer(OpenGL->RenderWidth, OpenGL->RenderHeight);
+    AddFramebufferTexture(&OpenGL->FinalResolveFramebuffer, GL_RGBA8);
+    EndFramebufferCreation(&OpenGL->FinalResolveFramebuffer);
     
     generated_mesh SphereMesh = GenerateSphere(1);
     Memory->Scene.GeneratedSphereID = RegisterGeneratedMesh(&SphereMesh);
@@ -453,6 +455,8 @@ SetProjection(camera* Camera) {
     Proj.Forward = ProjInv.Forward * CameraXForm.Forward;
     Proj.Inverse = CameraXForm.Inverse * ProjInv.Inverse;
     
+    Camera->Proj = Proj;
+    
     return Proj;
 }
 
@@ -472,78 +476,72 @@ GetFrustrumCornersWorldSpace(m4x4 InvProj, v4* CornersOut) {
     }
 }
 
-static m4x4
-GetCascadeLightSpaceMatrix(directional_light Light, rectangle3 BoundingBox, camera* Camera, f32 NearPlane, f32 FarPlane) {
+
+static void
+UpdateCascades(directional_light Light, camera* Camera, f32* CascadeSplits, u32 CascadeCount, m4x4* CascadeProjs) {
     
-    f32 AspectWidthOverHeight = (f32)OpenGL->RenderWidth/(f32)OpenGL->RenderHeight;
+    f32 ClipRange = Camera->FarClip - Camera->NearClip;
     
-    m4x4_inv ProjInv = PerspectiveProjection(AspectWidthOverHeight, Camera->FOV, NearPlane, FarPlane);
-    m4x4_inv CameraXForm = CameraTransform(Camera->XAxis, Camera->YAxis, Camera->ZAxis, Camera->P);
+    f32 LastSplitDistance = 0.0f;
     
-    m4x4_inv Proj;
-    Proj.Forward = ProjInv.Forward * CameraXForm.Forward;
-    Proj.Inverse = CameraXForm.Inverse * ProjInv.Inverse;
-    
-    v4 Corners[8] = {};
-    GetFrustrumCornersWorldSpace(Proj.Inverse, Corners); 
-    
-    
-    v3 Center = {};
-    for(u32 I = 0;
-        I < 8;
-        I++) {
+    for(u32 CascadeIndex = 0;
+        CascadeIndex < CascadeCount;
+        CascadeIndex++) {
         
-        Center += Corners[I].xyz;
-    }
-    Center /= 8;
-    
-    m4x4_inv LightViewMatrix = LookAt(Center + Light.Direction, Center, V3(0, 1, 0));
-    
-    f32 MinX = F32MAX;
-    f32 MaxX = F32MIN;
-    f32 MinY = F32MAX;
-    f32 MaxY = F32MIN;
-    f32 MinZ = F32MAX;
-    f32 MaxZ = F32MIN;
-    
-    for(u32 I = 0; I < 8; I++) {
+        f32 SplitDistance = CascadeSplits[CascadeIndex];
         
-        v4 Test = LightViewMatrix.Forward * Corners[I];
-        MinX = Min(MinX, Test.x);
-        MaxX = Max(MaxX, Test.x);
-        MinY = Min(MinY, Test.y);
-        MaxY = Max(MaxY, Test.y);
-        MinZ = Min(MinZ, Test.z);
-        MaxZ = Max(MaxZ, Test.z);
+        v3 FrustumCorners[8] = {
+            V3(-1.0f,  1.0f, -1.0f),
+            V3( 1.0f,  1.0f, -1.0f),
+            V3( 1.0f, -1.0f, -1.0f),
+            V3(-1.0f, -1.0f, -1.0f),
+            V3(-1.0f,  1.0f,  1.0f),
+            V3( 1.0f,  1.0f,  1.0f),
+            V3( 1.0f, -1.0f,  1.0f),
+            V3(-1.0f, -1.0f,  1.0f),
+        };
+        
+        m4x4 CamInverse = Camera->Proj.Inverse;
+        
+        for(u32 I = 0; I < 8; I++) {
+            
+            v4 CornerInv = CamInverse * V4(FrustumCorners[I], 1.0f);
+            FrustumCorners[I] = CornerInv.xyz / CornerInv.w;
+        }
+        
+        for(u32 I = 0; I < 4; I++) {
+            v3 Distance = FrustumCorners[I + 4] - FrustumCorners[I];
+            FrustumCorners[I + 4] = FrustumCorners[I] + (Distance * SplitDistance);
+            FrustumCorners[I] = FrustumCorners[I] + (Distance * LastSplitDistance);
+        }
+        
+        v3 FrustumCenter = {};
+        for(u32 I = 0; I < 8; I++) {
+            FrustumCenter += FrustumCorners[I];
+        }
+        FrustumCenter /= 8.0f;
+        
+        f32 Radius = 0.0f;
+        for(u32 I = 0; I < 8; I++) {
+            f32 Distance = Length(FrustumCorners[I] - FrustumCenter);
+            Radius = Max(Radius, Distance);
+        }
+        
+        Radius = Ceil(Radius * 16.0f) / 16.0f;
+        
+        
+        v3 MaxExtents = V3(Radius);
+        v3 MinExtents = -MaxExtents;
+        
+        m4x4_inv LightView = LookAt(FrustumCenter + Light.Direction * -MinExtents.z, FrustumCenter, V3(0, 1, 0));
+        m4x4_inv LightOrtho = OrthographicProjection(V2(MinExtents.x, MaxExtents.x), V2(MinExtents.y, MaxExtents.y), V2(-10.0f, (MaxExtents.z - MinExtents.z)));
+        
+        CascadeProjs[CascadeIndex] = LightOrtho.Forward * LightView.Forward;
+        
+        LastSplitDistance = SplitDistance;
+        
+        CascadeSplits[CascadeIndex] = (Camera->NearClip + SplitDistance * ClipRange) * 1.0f;
     }
-    
-    f32 ZMuliplier = 2.0f;
-    if(MinZ < 0.0f) {
-        MinZ *= ZMuliplier;
-    } else {
-        MinZ /= ZMuliplier;
-    }
-    if(MaxZ < 0.0f) {
-        MaxZ /= ZMuliplier;
-    } else {
-        MaxZ *= ZMuliplier;
-    }
-    
-    m4x4_inv LightOrthoMatrix = OrthographicProjection(V2(MinX, MaxX), V2(BoundingBox.Min.y, BoundingBox.Max.y), V2(MinZ, MaxZ));
-    
-    f32 ScaleX = 2.0f / (MaxX - MinX);
-    f32 ScaleY = 2.0f / (MaxY - MinY);
-    f32 OffsetX = -0.5f * (MinX + MaxX) * ScaleX;
-    f32 OffsetY = -0.5f * (MinY + MaxY) * ScaleY;
-    
-    m4x4 CropMatrix = M4x4Identity();
-    CropMatrix.E[0][0] = ScaleX;
-    //CropMatrix.E[1][1] = ScaleY;
-    CropMatrix.E[0][3] = OffsetX;
-    //CropMatrix.E[1][3] = OffsetY;
-    
-    m4x4 Result = LightOrthoMatrix.Forward * LightViewMatrix.Forward;
-    return Result;
 }
 
 static camera_update_params
@@ -649,6 +647,31 @@ DrawSphere(app_memory* Memory, v3 P, v3 Scale, f32 Roughness, f32 Metalness, v4 
     RegisterDrawCommand(MeshID, 1);
 }
 
+static void
+DrawMesh(app_memory* Memory, u32 MeshIndex) {
+    
+    per_draw_uniforms DrawUniform = {};
+    DrawUniform.AlbedoID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_ALBEDO];
+    DrawUniform.NormalID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_NORMAL];
+    DrawUniform.RoughnessID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_ROUGHNESS];
+    DrawUniform.OcclusionID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_OCCLUSION];
+    
+    DrawUniform.RoughnessFactor = 0;
+    DrawUniform.MetallicFactor = 0;
+    DrawUniform.ModelProj = M4x4Identity();
+    
+    OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
+    
+    u32 MeshID = Memory->Scene.RenderMeshIDArray[MeshIndex];
+    RegisterDrawCommand(MeshID, 1);
+}
+
+static void
+FramebufferSetClipRect(rectangle2 Clip) {
+    
+    glScissor(Clip.Min.x, Clip.Min.y, Clip.Max.x, Clip.Max.y);
+}
+
 
 static void
 InitializeScene(app_memory* Memory) {
@@ -735,22 +758,23 @@ InitializeScene(app_memory* Memory) {
     for(u32 MeshIndex = 0;
         MeshIndex < Memory->Scene.RenderMeshIDCount;
         MeshIndex++) {
-        
-        per_draw_uniforms DrawUniform = {};
-        DrawUniform.AlbedoID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_ALBEDO];
-        DrawUniform.NormalID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_NORMAL];
-        DrawUniform.RoughnessID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_ROUGHNESS];
-        DrawUniform.OcclusionID = Memory->Scene.RenderMeshTextureArray[MeshIndex][MATERIAL_TYPE_OCCLUSION];
-        
-        DrawUniform.RoughnessFactor = 0;
-        DrawUniform.MetallicFactor = 0;
-        DrawUniform.ModelProj = M4x4Identity();
-        
-        OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
-        
-        u32 MeshID = Memory->Scene.RenderMeshIDArray[MeshIndex];
-        RegisterDrawCommand(MeshID, 1);
+        DrawMesh(Memory, MeshIndex);
     }
+#endif
+    
+#if 0
+    DrawMesh(Memory, 0);
+    DrawMesh(Memory, 1);
+    DrawMesh(Memory, 2);
+    DrawMesh(Memory, 3);
+    DrawMesh(Memory, 7);
+    DrawMesh(Memory, 8);
+    DrawMesh(Memory, 45);
+    DrawMesh(Memory, 46);
+    
+    //DrawMesh(Memory, 52);
+    //DrawMesh(Memory, 61);
+    //DrawMesh(Memory, 68);
 #endif
     
     
@@ -769,6 +793,26 @@ InitializeScene(app_memory* Memory) {
     glBlendEquation(GL_FUNC_ADD);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     
+    
+    Scene->PointLights[0].Position = V3(-3, 2, -3);
+    Scene->PointLights[0].Radius = 5.0f;
+    Scene->PointLights[0].Color = V3(0.9, 0.1, 0.1);
+    
+    Scene->PointLights[1].Position = V3(3, 2, -3);
+    Scene->PointLights[1].Radius = 5.0f;
+    Scene->PointLights[1].Color = V3(0.1, 0.9, 0.1);
+    
+    Scene->PointLights[2].Position = V3(-3, 2, 3);
+    Scene->PointLights[2].Radius = 5.0f;
+    Scene->PointLights[2].Color = V3(0.1, 0.1, 0.9);
+    
+    Scene->PointLights[3].Position = V3(3, 2, 3);
+    Scene->PointLights[3].Radius = 5.0f;
+    Scene->PointLights[3].Color = V3(0.1, 0.9, 0.9);
+    
+    Scene->SunLight.Direction = Normalize(V3(0.1, 1, 0.2));
+    Scene->SunLight.Color = V3(0.8, 0.8, 0.2);
+    
     Scene->IsInitialized = true;
 }
 
@@ -786,82 +830,39 @@ UpdateAndRender(app_memory* Memory) {
         OpenGL->SkyboxShader = LoadShader(Memory, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
         OpenGL->PointLightShadowShader = LoadShader(Memory, "gl_shaders/point_light_shadow.vert", "gl_shaders/point_light_shadow.frag", "gl_shaders/point_light_shadow.geom");
         OpenGL->CascadeShadowmapShader = LoadShader(Memory, "gl_shaders/cascade_shadowmap.vert", "gl_shaders/cascade_shadowmap.frag", "gl_shaders/cascade_shadowmap.geom");
+        OpenGL->DisplayGbufferShader = LoadShader(Memory, "gl_shaders/resolve.vert", "gl_shaders/display_gbuffer.frag", 0);
     }
     
-    MaybeReloadShader(Memory, &OpenGL->GBufferShader, "gl_shaders/gbuffer.vert", "gl_shaders/gbuffer.frag", 0);
-    MaybeReloadShader(Memory, &OpenGL->ResolveShader, "gl_shaders/resolve.vert", "gl_shaders/resolve.frag", 0);
-    MaybeReloadShader(Memory, &OpenGL->ShadowmapShader, "gl_shaders/shadowmap.vert", "gl_shaders/shadowmap.frag", 0);
-    MaybeReloadShader(Memory, &OpenGL->SkyboxShader, "gl_shaders/skybox.vert", "gl_shaders/skybox.frag", 0);
-    MaybeReloadShader(Memory, &OpenGL->PointLightShadowShader, "gl_shaders/point_light_shadow.vert", "gl_shaders/point_light_shadow.frag", "gl_shaders/point_light_shadow.geom");
-    MaybeReloadShader(Memory, &OpenGL->CascadeShadowmapShader, "gl_shaders/cascade_shadowmap.vert", "gl_shaders/cascade_shadowmap.frag", "gl_shaders/cascade_shadowmap.geom");
+    MaybeReloadShader(Memory, &OpenGL->GBufferShader);
+    MaybeReloadShader(Memory, &OpenGL->ResolveShader);
+    MaybeReloadShader(Memory, &OpenGL->ShadowmapShader);
+    MaybeReloadShader(Memory, &OpenGL->SkyboxShader);
+    MaybeReloadShader(Memory, &OpenGL->PointLightShadowShader);
+    MaybeReloadShader(Memory, &OpenGL->CascadeShadowmapShader);
+    MaybeReloadShader(Memory, &OpenGL->DisplayGbufferShader);
     
-    UpdateCamera(&Memory->Scene.Camera);
+    scene* Scene = &Memory->Scene;
+    camera* Camera = &Scene->Camera;
     
-    point_light Lights[4] = {};
-    Lights[0].Position = V3(0, 2, 0);
-    Lights[0].Radius = 5.0f;
-    Lights[0].Color = V3(0.9, 0.1, 0.1);
-    
-#if 1
-    Lights[1].Position = V3(2, 2, 0);
-    Lights[1].Radius = 5.0f;
-    Lights[1].Color = V3(0.1, 0.9, 0.1);
+    UpdateCamera(Camera);
+    SetProjection(Camera);
     
     
-    Lights[2].Position = V3(-2, 2, 0);
-    Lights[2].Radius = 5.0f;
-    Lights[2].Color = V3(0.1, 0.1, 0.9);
     
     
-    Lights[3].Position = V3(0, 1, 0);
-    Lights[3].Radius = 5.0f;
-    Lights[3].Color = V3(0.9, 0.9, 0.9);
-#endif
+    m4x4_inv SunLightProj = GenerateDirectionLightProj(Scene->SunLight);
     
     
-    directional_light SunLight = {};
-    SunLight.Direction = Normalize(V3(0.3, 1, 0.1));
-    SunLight.Color = V3(0.8, 0.8, 0.2);
-    
-    m4x4_inv SunLightProj = GenerateDirectionLightProj(SunLight);
-    
-#if 0
-    for(u32 LightIndex = 0;
-        LightIndex < 4;
-        LightIndex++) {
-        per_draw_uniforms DrawUniform = {};
-        DrawUniform.RoughnessFactor = 0;
-        DrawUniform.MetallicFactor = 1;
-        DrawUniform.ShaderFlags |= SHADER_FLAG_USE_COLOR;
-        DrawUniform.Color = V4(1, 1, 1, 1);
-        
-        m4x4 M = M4x4Identity();
-        M = Translate(M, Lights[LightIndex].Position);
-        M = Scale(M, V3(0.1, 0.1, 0.1));
-        DrawUniform.ModelProj = M;
-        
-        
-        OpenGL->DrawUniforms[OpenGL->IndirectCommandsCount] = DrawUniform;
-        u32 MeshID = Memory->Scene.GeneratedSphereID;
-        OpenGL->IndirectCommands[OpenGL->IndirectCommandsCount] = GenerateIndirectDrawCommand(MeshID, 1);
-        OpenGL->IndirectCommandsCount++;
-        
-    }
-#endif
-    
-    
-    m4x4_inv Proj = SetProjection(&Memory->Scene.Camera);
-    
-    OpenGL->FrameUniforms.CameraProj = Proj.Forward;
+    OpenGL->FrameUniforms.CameraProj = Camera->Proj.Forward;
     OpenGL->FrameUniforms.LightProj = SunLightProj.Forward;
-    OpenGL->FrameUniforms.PointLight[0] = Lights[0];
-    OpenGL->FrameUniforms.PointLight[1] = Lights[1];
-    OpenGL->FrameUniforms.PointLight[2] = Lights[2];
-    OpenGL->FrameUniforms.PointLight[3] = Lights[3];
+    OpenGL->FrameUniforms.PointLight[0] = Scene->PointLights[0];
+    OpenGL->FrameUniforms.PointLight[1] = Scene->PointLights[1];
+    OpenGL->FrameUniforms.PointLight[2] = Scene->PointLights[2];
+    OpenGL->FrameUniforms.PointLight[3] = Scene->PointLights[3];
     
-    OpenGL->FrameUniforms.SunLight = SunLight;
+    OpenGL->FrameUniforms.SunLight = Scene->SunLight;
     OpenGL->FrameUniforms.FramebufferTextureToDisplay = 0;
-    OpenGL->FrameUniforms.CameraP = Memory->Scene.Camera.P;
+    OpenGL->FrameUniforms.CameraP = Scene->Camera.P;
     
     u32 TotalDrawCount = OpenGL->IndirectCommandsCount;
     glNamedBufferSubData(OpenGL->DrawUniformBuffer, 0, sizeof(per_draw_uniforms)*TotalDrawCount, OpenGL->DrawUniforms);
@@ -905,25 +906,14 @@ UpdateAndRender(app_memory* Memory) {
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
     }
     
-    
-    camera* Camera = &Memory->Scene.Camera;
     m4x4 SunLightCascadeProj[CASCADE_COUNT] = {};
-    float ShadowCascades[] = {Camera->FarClip /15.0f, Camera->FarClip /5.0f, Camera->FarClip /2.0f};
+    float ShadowCascades[] = {0.1, 0.3, 0.6, 1.0};
     {
         
-        //glCullFace(GL_FRONT);
-        for(u32 I = 0;
-            I < CASCADE_COUNT;
-            I++) {
-            
-            if(I == 0) {
-                SunLightCascadeProj[I] = GetCascadeLightSpaceMatrix(SunLight, Memory->Scene.LoadedModel.BoundingBox, Camera, Camera->NearClip, ShadowCascades[I]);
-            } else if(I < CASCADE_COUNT - 1) {
-                SunLightCascadeProj[I] = GetCascadeLightSpaceMatrix(SunLight,Memory->Scene.LoadedModel.BoundingBox, Camera, ShadowCascades[I-1], ShadowCascades[I]);
-            } else {
-                SunLightCascadeProj[I] = GetCascadeLightSpaceMatrix(SunLight,Memory->Scene.LoadedModel.BoundingBox, Camera, ShadowCascades[I-1], Camera->FarClip);
-            }
-        }
+        glCullFace(GL_FRONT);
+        
+        UpdateCascades(Scene->SunLight, Camera, ShadowCascades, CASCADE_COUNT, SunLightCascadeProj);
+        
         
         GLuint Shader = OpenGL->CascadeShadowmapShader.ID;
         glUseProgram(Shader);
@@ -943,12 +933,13 @@ UpdateAndRender(app_memory* Memory) {
         
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
         
-        //glCullFace(GL_BACK);
+        glCullFace(GL_BACK);
     }
     
     
     {
         
+#if 0
         GLuint Shader = OpenGL->ShadowmapShader.ID;
         glUseProgram(Shader);
         
@@ -964,6 +955,8 @@ UpdateAndRender(app_memory* Memory) {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, glGetProgramResourceIndex(Shader, GL_SHADER_STORAGE_BLOCK, "DrawUniforms"), OpenGL->DrawUniformBuffer);
         
         glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_INT, NULL, TotalDrawCount, 0);
+        
+#endif
     }
     
     {
@@ -1002,7 +995,7 @@ UpdateAndRender(app_memory* Memory) {
     
     {
         
-        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->ResolveFramebuffer.ID);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->LightingResolveFramebuffer.ID);
         glViewport(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         glScissor(0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight);
         
@@ -1014,11 +1007,11 @@ UpdateAndRender(app_memory* Memory) {
         glBindVertexArray(OpenGL->CubemapVAO);
         
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, Memory->Scene.SkyboxID);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, Scene->SkyboxID);
         
         f32 AspectWidthOverHeight = (f32)OpenGL->RenderWidth/(f32)OpenGL->RenderHeight;
         
-        camera* Camera = &Memory->Scene.Camera;
+        camera* Camera = &Scene->Camera;
         m4x4_inv SkyboxProj = PerspectiveProjection(AspectWidthOverHeight, Camera->FOV, Camera->NearClip, Camera->FarClip);
         m4x4_inv SkyboxXForm = CameraTransform(Camera->XAxis, Camera->YAxis, Camera->ZAxis, V3(0, 0, 0));
         
@@ -1036,10 +1029,9 @@ UpdateAndRender(app_memory* Memory) {
     {
         
         GLuint Shader = OpenGL->ResolveShader.ID;
-        
         glUseProgram(Shader);
         glBindVertexArray(OpenGL->FullscreenVAO);
-        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->ResolveFramebuffer.ID);
+        glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->LightingResolveFramebuffer.ID);
         
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[0]);
@@ -1058,8 +1050,54 @@ UpdateAndRender(app_memory* Memory) {
         
         //glBindBuffer(GL_ARRAY_BUFFER, OpenGL->FullscreenVBO);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        
-        glBlitNamedFramebuffer(OpenGL->ResolveFramebuffer.ID, 0, 0, 0, OpenGL->ResolveFramebuffer.Width, OpenGL->ResolveFramebuffer.Height,
-                               0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     }
+    
+    GLuint Shader = OpenGL->DisplayGbufferShader.ID;
+    glUseProgram(Shader);
+    
+    glBindVertexArray(OpenGL->FullscreenVAO);
+    glBindFramebuffer(GL_FRAMEBUFFER, OpenGL->FinalResolveFramebuffer.ID);
+    
+    int BufferToDisplay = Memory->Settings.BufferToDisplay;
+    
+    if(Memory->Settings.DisplayGbuffer) {
+        BufferToDisplay = -1;
+        
+    }
+    
+    glUniform1ui(glGetUniformLocation(Shader, "PointLightIndex"), Memory->Settings.LightIndex);
+    glUniform1i(glGetUniformLocation(Shader, "BufferToDisplay"), BufferToDisplay);
+    glUniform2f(glGetUniformLocation(Shader, "Resolution"), (f32)OpenGL->RenderWidth, (f32)OpenGL->RenderHeight);
+    
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->LightingResolveFramebuffer.ColorTarget[0]);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[0]);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[1]);
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[2]);
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[3]);
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.ColorTarget[4]);
+    glActiveTexture(GL_TEXTURE6);
+    glBindTexture(GL_TEXTURE_2D, OpenGL->GBufferFramebuffer.DepthTarget); 
+    glActiveTexture(GL_TEXTURE7);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, OpenGL->SunlightFramebuffer.DepthTarget); 
+    glActiveTexture(GL_TEXTURE8);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, OpenGL->CubeShadowmapFramebuffer.DepthTarget);
+    
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    
+    glBlitNamedFramebuffer(OpenGL->FinalResolveFramebuffer.ID, 0, 0, 0, OpenGL->FinalResolveFramebuffer.Width, OpenGL->FinalResolveFramebuffer.Height,
+                           0, 0, OpenGL->RenderWidth, OpenGL->RenderHeight, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    
+    
+    
+    {
+        //For IMGUI
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+    
 }

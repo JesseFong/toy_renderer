@@ -6,6 +6,10 @@
 struct shader {
     GLuint ID;
     
+    char* VertPath;
+    char* FragPath;
+    char* GeomPath;
+    
     u64 LastWriteID;
     b32 NoErrors;
 };
@@ -14,6 +18,11 @@ struct shader {
 static shader
 LoadShader(app_memory* Memory, char* VertPath, char* FragPath, char* GeomPath) {
     shader Result = {};
+    
+    Result.VertPath = VertPath;
+    Result.FragPath = FragPath;
+    Result.GeomPath = GeomPath;
+    
     Result.ID = glCreateProgram();
     Result.NoErrors = true;
     
@@ -108,22 +117,23 @@ LoadShader(app_memory* Memory, char* VertPath, char* FragPath, char* GeomPath) {
 }
 
 static b32
-ShouldShaderReload(shader* Shader, char* VertPath, char* FragPath, char* GeomPath) {
+ShouldShaderReload(shader* Shader) {
     b32 Result = false;
+    
     
     u64 LastWriteID = {};
     platform_file_info CommonInfo = PlatformOpenFile("gl_shaders/common.h");
     PlatformCloseFile(&CommonInfo);
     LastWriteID |= CommonInfo.FileTime;
-    platform_file_info VertInfo = PlatformOpenFile(VertPath);
+    platform_file_info VertInfo = PlatformOpenFile(Shader->VertPath);
     PlatformCloseFile(&VertInfo);
     LastWriteID |= VertInfo.FileTime;
-    platform_file_info FragInfo = PlatformOpenFile(FragPath);
+    platform_file_info FragInfo = PlatformOpenFile(Shader->FragPath);
     PlatformCloseFile(&FragInfo);
     LastWriteID |= FragInfo.FileTime;
     
-    if(GeomPath) {
-        platform_file_info GeomInfo = PlatformOpenFile(GeomPath);
+    if(Shader->GeomPath) {
+        platform_file_info GeomInfo = PlatformOpenFile(Shader->GeomPath);
         PlatformCloseFile(&GeomInfo);
         LastWriteID |= GeomInfo.FileTime;
     }
@@ -143,10 +153,10 @@ FreeShader(GLuint* Handle) {
 }
 
 static void
-MaybeReloadShader(app_memory* Memory, shader* Shader, char* VertPath, char* FragPath, char* GeomPath) {
+MaybeReloadShader(app_memory* Memory, shader* Shader) {
     
-    if(ShouldShaderReload(Shader, VertPath, FragPath, GeomPath)) {
-        shader TempShader = LoadShader(Memory, VertPath, FragPath, GeomPath);
+    if(ShouldShaderReload(Shader)) {
+        shader TempShader = LoadShader(Memory, Shader->VertPath, Shader->FragPath, Shader->GeomPath);
         if(TempShader.NoErrors) {
             FreeShader(&Shader->ID);
             *Shader = TempShader;

@@ -3,6 +3,10 @@
 #define WINDOW_TITLE "3D Engine"
 
 #include "platform_layer/platform.cpp"
+#include "di_ui/ui_default_includes.h"
+
+#include "asset.h"
+#include "font_loading.h"
 #include "mesh_generation.h"
 #include "gltf_loader.h"
 #include "camera.h"
@@ -11,7 +15,11 @@
 #include "opengl.cpp"
 #include "draw.cpp"
 
-#include "glm/glm.hpp"
+#include "gl_ui_renderer.h"
+#include "renderer_panel.h"
+
+
+//#include "glm/glm.hpp"
 
 global_variable u32 GLOBALWindowWidth  = 1600;
 global_variable u32 GLOBALWindowHeight = 900;
@@ -42,15 +50,31 @@ int main(int argc, char** argv) {
     InitializeOpenGL();
     InitializeOpenGLScene(&Memory, GLOBALWindowWidth, GLOBALWindowHeight);
     
+    
+    asset_font_atlas FontAtlas = LoadFontAtlasFromFile("arial.ttf", 64);
+    GLOBALUIFontAtlas = &FontAtlas;
+    Memory.UI = (ui_state*)ArenaPush(&Memory.MainArena, sizeof(ui_state));
+    InitUIRenderer();
+    
     while(GLOBALPlatformState->Window.IsRunning) {
         UpdateTime();
         PlatformProcessMessages();
         
+        rectangle2 WindowRect = RectMinMax(V2(0, 0), V2((f32)GLOBALWindowWidth, (f32)GLOBALWindowHeight));
         input* Input = &GLOBALPlatformState->Input;
-        platform_time* Time = &GLOBALPlatformState->Time; 
+        platform_time* Time = &GLOBALPlatformState->Time;
+        
+        
+        UIBeginFrame(Memory.UI, WindowRect, Input->Mouse.P, Input->Mouse.dP, WasPressed(KEY_MOUSE1), IsDown(KEY_MOUSE1), WentUp(KEY_MOUSE1),
+                     Input->TextInputThisFrame, Input->TextInputCount, WasPressed(KEY_SHIFT), WasPressed(KEY_CONTROL), WasPressed(KEY_ALT), Time->TimeDeltaInSeconds, 0);
+        
         
         ArenaPopTo(&Memory.TempArena, 0);
         UpdateAndRender(&Memory);
+        
+        RendererUIPanels(&Memory);
+        
+        DrawUI(Memory.UI);
         SwapBuffers(WindowDC);
     }
     

@@ -1,25 +1,4 @@
 
-layout(std140, row_major, binding=0)uniform FrameUniforms 
-{
-    mat4 CameraProj;
-    mat4 LightProj;
-    point_light PointLight[4];
-    directional_light SunLight;
-    vec3 CameraP;
-    uint FrambufferTextureToDisplay;
-};
-
-layout(binding = 1)uniform TextureArray
-{
-    uint64_t Textures[1024];
-};
-
-layout(std430, row_major) buffer DrawUniforms
-{
-    draw_uniform DrawUniformArray[];
-};
-
-
 layout(location=0) out vec4 OutC; //Color
 layout(location=1) out vec4 OutN; //Normal
 layout(location=2) out vec4 OutP; //WorldPosition
@@ -139,6 +118,7 @@ void main()
         if(ClipSpaceZ <= CascadeDepths[i]) {
             CascadeShadow = ComputeCascadeShadow(i, LightSpacePos[i]);
             
+#if 0
             if(i == 0) {
                 FragColor *= vec4(1, 0, 0, 1);
             } else if(i == 1) {
@@ -148,6 +128,7 @@ void main()
             } else if(i == 3) {
                 FragColor *= vec4(1, 0, 1, 1);
             }
+#endif
             break;
         }
     }
