@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     InitializeOpenGLScene(&Memory, GLOBALWindowWidth, GLOBALWindowHeight);
     
     
-    asset_font_atlas FontAtlas = LoadFontAtlasFromFile("arial.ttf", 64);
+    asset_font_atlas FontAtlas = LoadFontAtlasFromFile("C:/Windows/Fonts/arial.ttf", 64);
     GLOBALUIFontAtlas = &FontAtlas;
     Memory.UI = (ui_state*)ArenaPush(&Memory.MainArena, sizeof(ui_state));
     InitUIRenderer();
