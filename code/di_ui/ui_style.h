@@ -3,53 +3,63 @@
 #ifndef UI_STYLE_H
 #define UI_STYLE_H
 
-struct ui_window_style {
-    v2s BorderSize;
-    u32 FontSize;
+struct ui_style {
+    v2s WindowBorderSize;
+    s32 HeaderHeight;
+    s32 ResizeSize;
+    v4 ResizeColor;
     
-    v4 BackgroundColor;
-    v4 BorderColor;
-};
-
-struct ui_button_style {
-    v2u BorderSize;
-    f32 FontSize;
-    v4 Color;
-    v4 BorderColor;
+    v4 WindowColor;
+    v4 WindowBorderColor;
+    
+    v2s ButtonBorderSize;
+    v4 ButtonBorderColor;
+    v4 ButtonColor;
+    
+    v4 HotDelta;
+    v4 NextSubmitDelta;
+    v4 SubmitDelta;
+    
     v4 LightTextColor;
     v4 DarkTextColor;
-};
-
-struct ui_template_style {
+    
+    v2s ToggleButtonSize;
+    
     v4 SliderColor;
     f32 V3SliderRatio;
-    v4 ScrollBackgroundColor;
-    v4 ScrollbarColor;
-};
-
-global_variable ui_window_style UIDefaultWindowStyle = {
-    {4, 4},                       //Window Border Size
-    {24},                         //Font Size
     
-    {0.13f, 0.13f, 0.15f, 1.0f},  //Background Color
-    {0.1f, 0.1f, 0.1f, 1.0f},     //Border Color
+    v2s ScrollBarThumbOffset;
+    v4 ScrollBackgroundColor;
+    v4 ScrollColor;
+    v4 ScrollCornerColor;
+    
 };
 
-global_variable ui_button_style UIDefaultButtonStyle = {
-    {1, 1},
-    {24},
-    {0.18f, 0.19f, 0.21f, 1.0f},  //Color
-    {0.13f, 0.36f, 0.44f, 1.0f},  //BorderColor
-    {0.8f, 0.8f, 0.8f, 1.0f},  //Light Text Color
-    {0.2f, 0.2f, 0.2f, 1.0f},  //Dark Text Color
+global_variable ui_style UIStyle = {
+    {6, 6},                       //Window Border Size
+    {26},                         //Header Height
+    {20},                         //Resize Size
+    {0.5f, 0.13f, 0.13f, 1.0f},   //Resize Color
+    {0.1f, 0.1f, 0.1f, 1.0f},     //Window Color
+    {0.05f, 0.05f, 0.05f, 1.0f},  //Window Border Color
+    {2, 2},                       //ButtonBorderSize
+    {0.05f, 0.05f, 0.05f, 1.0f},  //Button Border Color
+    {0.25f, 0.25f, 0.25f, 0.7f},  //Button Color
+    {0.04f, 0.04f, 0.04f, 0.0f},  //HotDelta
+    {0.07f, 0.07f, 0.07f, 0.0f},  //NextSubmitDelta
+    {0.1f,  0.1f,  0.1f,  0.0f},  //SubmitDelta
+    {0.65f, 0.65f, 0.65f, 0.75f}, //Light Text Color
+    {0.2f, 0.2f, 0.2f, 1.0f},     //Dark Text Color
+    {2, 2},                       //ToggleButtonSize
+    {0.9f, 0.1f, 0.1f, 0.35f},    //Slider Color
+    {0.3f},                       //Slider Ratio
+    {4, 4},                       //Scrollbar Thumb Offset
+    {0.05f, 0.05f, 0.05f, 1.0f},  //Scroll Background Color
+    {0.2f, 0.2f, 0.2f, 1.0f},     //Scrollbar Color
+    {0.25f, 0.25f, 0.25f, 1.0f},  //Scroll Corner Color
 };
 
-global_variable ui_template_style UIDefaultTemplateStyle = {
-    {0.33f, 0.56f, 0.64f, 1.0f},  //Slider Color
-    {0.3f},                       //SliderRatio
-    {0.13f, 0.36f, 0.44f, 1.0f},  //Scroll Background Color
-    {0.03f, 0.26f, 0.54f, 1.0f},  //Scrollbar Color
-};
 
+global_variable b32 TestPress = false;
 
 #endif //UI_STYLE_H

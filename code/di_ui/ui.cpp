@@ -16,20 +16,17 @@ UIGenerateID(u32* ID, void* Data, u32 DataCount) {
     return(*ID);
 }
 
-static u32
-UIUniqueID(ui_state* State) {
-    u32 Result = State->UniqueIDSeed;
-    
-    u8 Data[8] = {4, 43, 121, 2, 4, 3, 99, 63};
-    Result = UIGenerateID(&Result, &Data[0], sizeof(Data));
-    
-    State->UniqueIDSeed = Result;
-    return Result;
+static void
+UIPushID(ui_window* Window, u32 ID) {
+    Assert(Window->IDCount <= UI_MAX_ID_STACK);
+    Window->IDStack[Window->IDCount] = ID;
+    Window->IDCount++;
 }
 
-static u32
-UIUniqueID(ui_window* Window) {
-    return UIUniqueID(Window->State);
+static void
+UIPopID(ui_window* Window) {
+    Assert(Window->IDCount > 0);
+    Window->IDCount--;
 }
 
 static u32
@@ -49,12 +46,10 @@ UIRandMod(u32 Mod) {
 
 static void
 UIInitializeMemory(ui_state* State) {
-    
     State->MemoryMax = Megabytes(64);
     State->MemoryBase = (u8*)PlatformAllocateMemory(State->MemoryMax);
     State->MemoryAt = State->MemoryBase;
     State->MemoryUsed = 0;
-    State->UniqueIDSeed = 6553693;
 }
 
 static char*
@@ -77,6 +72,16 @@ UIPushString(ui_window* Window, char* String) {
     State->MemoryUsed = Length + 1;
     
     return Result;
+}
+
+static char*
+UIPushFormatString(ui_window* Window, char* Format, ...) {
+    char Buffer[2048];
+    va_list VAList;
+    va_start(VAList, Format);
+    InternalVSNPrintf(Buffer, 2048, Format, VAList);
+    va_end(VAList);
+    return UIPushString(Window, Buffer);
 }
 
 global_variable u32 RandomColorCounter = 0;
@@ -175,30 +180,24 @@ enum ui_text_alignment_flags {
 
 
 static v2
-UIDrawTextJustified(rectangle2 BoundingBox, char* Text, u32* FontSize, u32 Flags = UI_TEXT_CENTER) {
+UILayoutTextAlignment(ui_window* Window, rectangle2 BoundingBox, char* Text) {
     
-    f32 Padding = 0.01f;
+    f32 Padding = 1.0;
+    BoundingBox = AddRadiusTo(BoundingBox, V2(-Padding, -Padding));
+    
+    u32 Flags = Window->CurrentTextAlignment;
+    u32 FontSize = Window->CurrentFontSize;
+    
     f32 BoundingWidth = GetWidth(BoundingBox);
     f32 BoundingHeight = GetHeight(BoundingBox);
     
-    BoundingBox = AddRadiusTo(BoundingBox, V2(-Padding, -Padding));
     
     v2 TextOutAt = BoundingBox.Min;
     
-    rectangle2 TextRect = SizeText(Text, TextOutAt.x, TextOutAt.y, *FontSize);
+    rectangle2 TextRect = SizeText(Text, TextOutAt.x, TextOutAt.y, FontSize);
     
     v2 BoundingDim = GetDim(BoundingBox);
     v2 TextDim = GetDim(TextRect);
-    
-    while(TextDim.x > BoundingDim.x || TextDim.y > BoundingDim.y) {
-        *FontSize = *FontSize - 1;
-        if(*FontSize <= UI_MIN_FONT_SIZE) {
-            
-            break;
-        }
-        TextRect = SizeText(Text, TextOutAt.x, TextOutAt.y, *FontSize);
-        TextDim = GetDim(TextRect);
-    }
     
     f32 AdditionalYOffset = 0;
     if(TextRect.Min.y < BoundingBox.Min.y) {
@@ -334,7 +333,7 @@ static b32
 UIIsHot(ui_window* Window,  ui_element* El, ui_interaction Interaction) {
     ui_state* State = Window->State;
     b32 Hot = ((Interaction.SubmitType != UI_SUBMIT_NONE) && 
-               (State->Focus == Window->ID) && 
+               (State->Focus == Window->ID) &&
                (!State->IsInteracting));
     
     if(Hot) {
@@ -357,11 +356,17 @@ UIIsHot(ui_window* Window,  ui_element* El, ui_interaction Interaction) {
 static ui_interaction
 UISubmitElement(ui_state* State, ui_element* El, u32 ID, u32 SubmitType) {
     //NOTE(Jesse): This function is mainly how things are set, the control flow of how things are unset, check UIBeginFrame();
-    ui_window* Window = State->CurrentWindow;
     
+    ui_window* Window = State->CurrentWindow;
     ui_interaction Interaction = {};
     Interaction.ID = ID;
     Interaction.SubmitType = SubmitType;
+    
+    if(Window->IsInScrollbarMode) {
+        if(!RectanglesIntersect(Window->CurrentScrollbarClipRect, El->Rect)) {
+            Interaction.State = UI_INTERACTION_STATE_CULL;
+        }
+    }
     
     b32 Hot = UIIsHot(Window, El, Interaction);
     
@@ -434,44 +439,59 @@ static void
 UIPushRenderElement(ui_window* Window, ui_render_element El) {
     
     if(Window->RenderElementCount < UI_MAX_RENDER_ELEMENTS) {
+        El.TextureID = Window->CurrentTexture;
+        El.PassbackID = Window->CurrentPassback;
         Window->RenderElements[Window->RenderElementCount++] = El;
     } else {
         Assert(!"Too Many Render Elements To Push");
     }
 }
 
-static void
-UIPushTriangle(ui_window* Window, ui_tri Tri, v4 Color, u32 TextureID = 0) {
-    ui_render_element RenderElement = {};
-    RenderElement.Type = UI_RENDER_TRI;
-    RenderElement.Tri = Tri;
-    RenderElement.Color = Color;
-    RenderElement.TextureID = TextureID;
-    UIPushRenderElement(Window, RenderElement);
+static v2
+UIRoundV2(v2 In) {
+    v2 Result = V2(Floor(In.x + 0.5), Floor(In.y + 0.5));
+    return In;
+}
+
+static ui_quad
+UIRoundQuad(ui_quad In) {
+    ui_quad Result = {};
+    Result.P0 = UIRoundV2(In.P0);
+    Result.P1 = UIRoundV2(In.P1);
+    Result.P2 = UIRoundV2(In.P2);
+    Result.P3 = UIRoundV2(In.P3);
+    return In;
+}
+
+static rectangle2
+UIRoundRect(rectangle2 In) {
+    rectangle2 Result = {};
+    Result.Min = UIRoundV2(In.Min);
+    Result.Max = UIRoundV2(In.Max);
+    return Result;
 }
 
 static void
-UIPushQuad(ui_window* Window, ui_quad Quad, v4 Color, u32 TextureID = 0) {
+UIPushQuad(ui_window* Window, ui_quad Quad, v4 Color) {
     ui_render_element RenderElement = {};
     RenderElement.Type = UI_RENDER_QUAD;
-    RenderElement.Quad = Quad;
+    RenderElement.Quad = UIRoundQuad(Quad);
     RenderElement.Color = Color;
-    RenderElement.TextureID = TextureID;
     UIPushRenderElement(Window, RenderElement);
 }
 
 static void
-UIPushRect(ui_window* Window, rectangle2 Rect, v4 Color, u32 TextureID = 0) {
+UIPushRect(ui_window* Window, rectangle2 Rect, v4 Color) {
     ui_quad Quad = {};
     Quad.P0 = V2(Rect.Min.x, Rect.Min.y);
     Quad.P1 = V2(Rect.Min.x, Rect.Max.y);
     Quad.P2 = V2(Rect.Max.x, Rect.Max.y);
     Quad.P3 = V2(Rect.Max.x, Rect.Min.y);
-    UIPushQuad(Window, Quad, Color, TextureID);
+    UIPushQuad(Window, Quad, Color);
 }
 
 static void
-UIPushLine(ui_window* Window, v2 From, v2 To, f32 Thickness, v4 Color, u32 TextureID = 0) {
+UIPushLine(ui_window* Window, v2 From, v2 To, f32 Thickness, v4 Color) {
     ui_quad Quad = {};
     
     v2 Line = To - From;
@@ -482,14 +502,38 @@ UIPushLine(ui_window* Window, v2 From, v2 To, f32 Thickness, v4 Color, u32 Textu
     Quad.P1 = From + LinePerp;
     Quad.P2 = To + LinePerp;
     Quad.P3 = To - LinePerp;
-    UIPushQuad(Window, Quad, Color, TextureID);
+    UIPushQuad(Window, Quad, Color);
+}
+
+
+static void
+UIPushRectOutline(ui_window* Window, rectangle2 Rect, v2 Thickness, v4 Color) {
+    v2 Dim = GetDim(Rect);
+    if(Length(Dim) > 0) {
+        UIPushRect(Window, UIRectMinDim(Rect.Min, V2(Thickness.x, Dim.y)), Color);
+        UIPushRect(Window, UIRectMinDim(V2(Rect.Min.x, (Rect.Max.y - Thickness.y)), V2(Dim.x, Thickness.y)), Color);
+        UIPushRect(Window, UIRectMinDim(V2(Rect.Max.x - Thickness.x, Rect.Min.y), V2(Thickness.x, Dim.y)), Color);
+        UIPushRect(Window, UIRectMinDim(Rect.Min, V2(Dim.x, Thickness.y)), Color);
+    }
+}
+
+static void
+UIPushText(ui_window* Window, char* Text, v2 TextAt, v4 Color) {
+    
+    ui_render_element RenderElement = {};
+    RenderElement.Type = UI_RENDER_TEXT;
+    RenderElement.Text.At = UIRoundV2(TextAt);
+    RenderElement.Text.Size = Window->CurrentFontSize;
+    RenderElement.Text.Text = Text;
+    RenderElement.Color = Color;
+    UIPushRenderElement(Window, RenderElement);
 }
 
 static void
 _UIPushClipRect(ui_window* Window, rectangle2 Rect) {
     ui_render_element RenderElement = {};
     RenderElement.Type = UI_RENDER_CLIP_RECT;
-    RenderElement.ClipRect = Rect;
+    RenderElement.ClipRect = UIRoundRect(Rect);
     UIPushRenderElement(Window, RenderElement);
 }
 
@@ -502,40 +546,37 @@ UISetClipRect(ui_window* Window, rectangle2 NewClipRect) {
 }
 
 static void
-UIPushRectOutline(ui_window* Window, rectangle2 Rect, v2 Thickness, v4 Color, u32 TextureID = 0) {
-    v2 Dim = GetDim(Rect);
-    if(Length(Dim) > 0) {
-        UIPushRect(Window, UIRectMinDim(Rect.Min, V2(Thickness.x, Dim.y)), Color, TextureID);
-        UIPushRect(Window, UIRectMinDim(V2(Rect.Min.x, (Rect.Max.y - Thickness.y)), V2(Dim.x, Thickness.y)), Color, TextureID);
-        UIPushRect(Window, UIRectMinDim(V2(Rect.Max.x - Thickness.x, Rect.Min.y), V2(Thickness.x, Dim.y)), Color, TextureID);
-        UIPushRect(Window, UIRectMinDim(Rect.Min, V2(Dim.x, Thickness.y)), Color, TextureID);
-    }
+UISetTextureID(ui_window* Window, u32 ID) {
+    Window->CurrentTexture = ID;
 }
 
-
 static void
-UIPushText(ui_window* Window, char* Text, u32 FontSize, v2 TextAt, v4 Color, u32 TextureID = 0) {
-    
-    ui_render_element RenderElement = {};
-    RenderElement.Type = UI_RENDER_TEXT;
-    RenderElement.Text = Text;
-    RenderElement.FontSize = FontSize;
-    RenderElement.TextAt = TextAt;
-    RenderElement.Color = Color;
-    RenderElement.TextureID = TextureID;
-    
-    if(Window->RenderElementCount < UI_MAX_RENDER_ELEMENTS) {
-        Window->RenderElements[Window->RenderElementCount++] = RenderElement;
-    } else {
-        Assert(!"Too Many Render Elements To Push");
-    }
+UISetPassbackID(ui_window* Window, u32 ID) {
+    Window->CurrentPassback = ID;
+}
+
+static u32
+UISetTextAlignment(ui_window* Window, u32 AlignmentFlags) {
+    u32 PrevAlignmentFlags = Window->CurrentTextAlignment;
+    Window->CurrentTextAlignment = AlignmentFlags;
+    return PrevAlignmentFlags;
+}
+
+static u32
+UISetFontSize(ui_window* Window, u32 FontSize) {
+    u32 PrevFontSize = Window->CurrentFontSize;
+    Window->CurrentFontSize = FontSize;
+    return PrevFontSize;
 }
 
 static ui_element
 UIGetLastElement(ui_window* Window) {
-    ui_element Result;
-    Result = Window->LastElement;
-    return Result;
+    return Window->LastElement;
+}
+
+static ui_interaction
+UIGetLastInteraction(ui_window* Window) {
+    return Window->LastInteraction;
 }
 
 static ui_window*
@@ -586,8 +627,25 @@ RemoveWindow(ui_state* State, u32 WindowID) {
     }
 }
 
+//This is a invisible button so we can do whatever drawing we want after
+inline b32
+UIButtonInternal(ui_window* Window, ui_id ID, rectangle2 Rect, u32 SubmitType) {
+    b32 Result = false;
+    ui_element El = UIBeginRectElement(Window, Rect);
+    
+    if(Window->IDCount > 0) {
+        UIGenerateID(&ID, &Window->IDStack[(Window->IDCount - 1)], sizeof(ui_id));
+    }
+    
+    ui_interaction Interaction = UISubmitElement(Window->State, &El, ID, SubmitType);
+    if(Interaction.State == UI_INTERACTION_STATE_SUBMIT) {
+        Result = true;
+    }
+    return Result;
+}
+
 inline ui_window*
-UIBeginWindow(ui_state* State, rectangle2 Rect, u32 ID, ui_window_style Style, u32 WindowFlags) {
+UIBeginWindow(ui_state* State, rectangle2 Rect, u32 ID, u32 WindowFlags) {
     
     b32 Found = false;
     
@@ -612,28 +670,25 @@ UIBeginWindow(ui_state* State, rectangle2 Rect, u32 ID, ui_window_style Style, u
         Result->BodyRect = Rect;
         Result->WorkingRect = Rect;
         Result->ID = ID;
-        Result->Style = Style;
         Result->WindowFlags = WindowFlags;
-        
-        if(WindowFlags & ~UI_WINDOW_ALWAYS_ON_BOTTOM) {
-            UIBringToFront(State, Result);
-        }
+        UIBringToFront(State, Result);
     }
+    Result->BodyWidth = GetWidth(Result->BodyRect);
+    Result->BodyHeight = GetHeight(Result->BodyRect);
+    Result->MinWidth = 100;
+    Result->MinHeight = 100;
+    Result->CurrentTexture = 0;
+    Result->CurrentPassback = 0;
+    Result->CurrentTextAlignment = UI_TEXT_CENTER;
+    Result->CurrentFontSize = UI_STARTING_FONT_SIZE;
+    Result->IDCount = 0;
     
     Result->KeepAlive = true; 
     Result->WasUpdated = false;
     Result->RenderElementCount = 0;
-    
-    
     State->CurrentWindow = Result;
     Result->State = State;
-    
     return(Result);
-}
-
-inline ui_window*
-UIEndWindow(ui_window* Window) {
-    
 }
 
 static u32
@@ -655,24 +710,17 @@ SetFocus(ui_state* State) {
 }
 
 inline void
-UIBeginFrame(ui_state* State, rectangle2 DrawRegionInPixels, v2 PixelMouseP, v2 dPixelMouseP, b32 WasPressed, b32 IsDown, b32 WentUp, char* TextInput, u32 TextInputCount, b32 ShiftPressed, b32 CtrlPressed, b32 AltPressed, f32 dt, u32 Flags) {
+UIBeginFrame(ui_state* State, rectangle2 DrawRegionInPixels, v2 PixelMouseP, v2 dPixelMouseP, b32 WasPressed, b32 IsDown, b32 WentUp, char* TextInput, u32 TextInputCount, f32 dt, u32 Flags) {
     
     if(WasPressed) {
         int Break = 0;
     }
     RandomColorCounter = 0;
     
+    if(TestPress) {
+        int BreakHere = 0;
+    }
     State->Flags = Flags;
-    
-    if(ShiftPressed) {
-        State->InputFlags |= UI_INPUT_SHIFT;
-    }
-    if(CtrlPressed) {
-        State->InputFlags |= UI_INPUT_ALT;
-    }
-    if(AltPressed) {
-        State->InputFlags |= UI_INPUT_ALT;
-    }
     
     State->WasPressed = WasPressed;
     State->IsDown = IsDown;
@@ -826,7 +874,7 @@ UIEndFrame(ui_state* State) {
         ui_window* Window = &State->Windows[WindowIndex];
         
         
-        if(Window->WasUpdated && (Window->WindowFlags & ~UI_WINDOW_ALWAYS_ON_BOTTOM)) {
+        if(Window->WasUpdated) {
             UIBringToFront(State, Window);
             WindowsBroughtToFront++;
             Assert(WindowsBroughtToFront < 2);
@@ -849,16 +897,11 @@ UIEndFrame(ui_state* State) {
         u32 Index = Entries[WindowIndex].Index;
         ui_window* Window = &State->Windows[Index];
         
-        
-        ZValue -= 5;
         for(u32 RenderIndex = 0;
             RenderIndex < Window->RenderElementCount;
             RenderIndex++) { 
             
             ui_render_element* RenderEl = &Window->RenderElements[RenderIndex];
-            RenderEl->ZValue = ZValue ;
-            ZValue -= 0.1;
-            
             Result->RenderElements[RenderElementCount++]= *RenderEl;
         }
     }
@@ -866,4 +909,5 @@ UIEndFrame(ui_state* State) {
     Result->RenderElementCount = RenderElementCount;
     return(Result);
 }
+
 

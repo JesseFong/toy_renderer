@@ -10,12 +10,6 @@ RendererUIPanels(app_memory* Memory) {
     renderer_settings* Settings = &Memory->Settings;
     scene* Scene = &Memory->Scene;
     
-    UIDefaultWindowStyle.BorderColor.a = 0.6;
-    UIDefaultWindowStyle.BackgroundColor.a = 0.6;
-    UIDefaultButtonStyle.Color.a = 0.6;
-    
-    
-    
     rectangle2 PanelRect = RectMinMax(V2(-1.0, 0.0), V2(-0.6, 1.0));
     
     ui_window* Window = UIBeginStandardWindow(UI, "Settings", UIConvertToPixelSpace(UI, PanelRect, UI_CLIP_SPACE), 11);
@@ -26,20 +20,14 @@ RendererUIPanels(app_memory* Memory) {
         Settings->DisplayGbuffer = true;
     }
     
-    ui_list_result List = UIList(Window, "Light: ", UICutTop(Rect, 30));
+    s32 ListResult = UIList(Window, "Light: ", UICutTop(Rect, 30));
     
-    if(List == UI_LIST_NEXT) {
-        Settings->LightIndex += 1;
-        if(Settings->LightIndex > 3) {
-            Settings->LightIndex = 0;
-        }
+    Settings->LightIndex += ListResult;
+    if(Settings->LightIndex > 3) {
+        Settings->LightIndex = 0;
     }
-    
-    if(List == UI_LIST_PREV) {
-        Settings->LightIndex -= 1;
-        if(Settings->LightIndex < 0) {
-            Settings->LightIndex = 3;
-        }
+    if(Settings->LightIndex < 0) {
+        Settings->LightIndex = 3;
     }
     
     point_light* Light = &Scene->PointLights[Settings->LightIndex];
@@ -50,7 +38,7 @@ RendererUIPanels(app_memory* Memory) {
     if(Settings->DisplayGbuffer) {
         
         rectangle2 SelectWindowRect = UIConvertToPixelSpace(UI, RectMinMax(V2(0, 0), V2(1, 1)), UI_SCREEN_SPACE);
-        ui_window* SelectWindow = UIBeginWindow(UI, SelectWindowRect, 12, UIDefaultWindowStyle, UI_WINDOW_ALWAYS_ON_BOTTOM);
+        ui_window* SelectWindow = UIBeginWindow(UI, SelectWindowRect, 12, UI_WINDOW_ALWAYS_ON_BOTTOM);
         rectangle2* Rect = &SelectWindow->WorkingRect;
         
         v2 ButtonSize = UIConvertToPixelSpace(UI, V2(1.0/3.0, 1.0/3.0), UI_SCREEN_SPACE);
@@ -67,11 +55,13 @@ RendererUIPanels(app_memory* Memory) {
                 ColumnIndex++) {
                 
                 u32 ID = RowIndex*3 + ColumnIndex + 325617;
-                if(UIButtonOutline(SelectWindow, ID, 0, UICutLeft(&RowRect, ButtonSize.x), UI_SUBMIT_ON_RELEASE, 0, UI_TEXT_CENTER)) {
+                UIPushID(SelectWindow, ID);
+                if(UIButtonOutline(SelectWindow, 0, UICutLeft(&RowRect, ButtonSize.x))) {
                     Settings->BufferToDisplay = BufferIndex;
                     Settings->DisplayGbuffer = false;
                 }
                 BufferIndex++;
+                UIPopID(SelectWindow);
             }
         }
     }

@@ -15,8 +15,10 @@ TODO:
 #define UI_MAX_RENDER_ELEMENTS 2048
 #define UI_MAX_WINDOWS 32
 #define UI_MAX_WINDOW_SCROLLBARS 16 //THIS IS PER WINDOW
-#define UI_MIN_FONT_SIZE 12
+#define UI_MAX_ID_STACK 32
+#define UI_STARTING_FONT_SIZE 24
 #define UI_MAX_TIME 4000.0f //The max ammount of time before we reset to 0
+#define MAX_SCROLL_CONTENT_SIZE 1000000.0f;
 
 enum ui_coordinate_type {
     UI_PIXEL_SPACE,
@@ -24,12 +26,15 @@ enum ui_coordinate_type {
     UI_CLIP_SPACE,
 };
 
+enum ui_axis_type {
+    UI_XAXIS = 1 << 0,
+    UI_YAXIS = 1 << 1,
+    UI_ZAXIS = 1 << 2,
+};
 
-enum ui_render_type {
+enum ui_render_typie {
     UI_RENDER_NONE,
-    UI_RENDER_TRI,
     UI_RENDER_QUAD,
-    UI_RENDER_CIRCLE,
     UI_RENDER_TEXT,
     UI_RENDER_CLIP_RECT,
     UI_RENDER_COUNT,
@@ -48,6 +53,7 @@ enum ui_interaction_state {
     UI_INTERACTION_STATE_HOT,
     UI_INTERACTION_STATE_NEXT_SUBMIT,
     UI_INTERACTION_STATE_SUBMIT,
+    UI_INTERACTION_STATE_CULL,
     UI_INTERACTION_STATE_COUNT,
 };
 
@@ -59,12 +65,6 @@ enum ui_element_bounds_type {
 
 typedef u32 ui_id;
 
-struct ui_tri {
-    v2 P0;
-    v2 P1;
-    v2 P2;
-};
-
 struct ui_quad {
     v2 P0;
     v2 P1;
@@ -72,9 +72,10 @@ struct ui_quad {
     v2 P3;
 };
 
-struct ui_circle {
-    v2 P;
-    f32 r;
+struct ui_text {
+    v2 At;
+    u32 Size;
+    char* Text;
 };
 
 struct ui_interaction {
@@ -95,15 +96,12 @@ struct ui_element {
 struct ui_render_element {
     u32 Type;
     v4 Color;
-    char* Text;
-    u32 FontSize;
-    v2 TextAt;
     f32 ZValue;
+    u32 PassbackID;
     u32 TextureID;
     union {
-        ui_tri Tri;
         ui_quad Quad;
-        ui_circle Circle;
+        ui_text Text;
         rectangle2 ClipRect;
     };
 };
@@ -121,9 +119,12 @@ enum ui_window_flags {
 
 struct ui_scrollbar_info {
     v2 LastScrollOffset;
+    u32 AxisFlags;
     rectangle2 WorkingRect;
     rectangle2 ContentRect;
-    rectangle2 ScrollbarRect;
+    rectangle2 ScrollbarRectY;
+    rectangle2 ScrollbarRectX;
+    rectangle2 CornerRect;
     rectangle2 PreviousClipRect;
 };
 
@@ -131,13 +132,20 @@ struct ui_window {
     rectangle2 BodyRect;
     rectangle2 WorkingRect;
     rectangle2 CurrentClipRect;
+    u32 BodyWidth;
+    u32 BodyHeight;
+    u32 MinWidth;
+    u32 MinHeight;
     
     ui_id ID;
     f32 ZValue;
     b32 WasUpdated;
     b32 KeepAlive;
     
-    ui_window_style Style;
+    u32 CurrentTexture;
+    u32 CurrentPassback; //Passes back an ID when we render;
+    u32 CurrentTextAlignment;
+    u32 CurrentFontSize;
     
     ui_render_element RenderElements[UI_MAX_RENDER_ELEMENTS];
     u32 RenderElementCount;
@@ -147,8 +155,13 @@ struct ui_window {
     ui_element LastElement;
     ui_interaction LastInteraction;
     
+    b32 IsInScrollbarMode;
+    rectangle2 CurrentScrollbarClipRect;
     ui_scrollbar_info ScrollInfos[UI_MAX_WINDOW_SCROLLBARS];
     u32 ScrollbarIndex;
+    
+    ui_id IDStack[UI_MAX_ID_STACK];
+    u32 IDCount;
     
     u32 WindowFlags;
 };
@@ -209,8 +222,6 @@ struct ui_state {
     u8* MemoryAt;
     u32 MemoryUsed;
     u32 MemoryMax;
-    
-    u32 UniqueIDSeed;
 };
 
 rectangle2 SizeText(char* Text, f32 TextOutX, f32 TextOutY, f32 FontSize);

@@ -187,7 +187,7 @@ DrawUI(ui_state* UI) {
             } break;
             
             case(UI_RENDER_TEXT): {
-                RenderUITextFromAtlas(El.TextAt.x, El.TextAt.y, El.ZValue, El.Text, El.FontSize, El.Color);
+                RenderUITextFromAtlas(El.Text.At.x, El.Text.At.y, El.ZValue, El.Text.Text, El.Text.Size, El.Color);
             } break;
             
         }

@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
         
         
         UIBeginFrame(Memory.UI, WindowRect, Input->Mouse.P, Input->Mouse.dP, WasPressed(KEY_MOUSE1), IsDown(KEY_MOUSE1), WentUp(KEY_MOUSE1),
-                     Input->TextInputThisFrame, Input->TextInputCount, WasPressed(KEY_SHIFT), WasPressed(KEY_CONTROL), WasPressed(KEY_ALT), Time->TimeDeltaInSeconds, 0);
+                     Input->TextInputThisFrame, Input->TextInputCount, Time->TimeDeltaInSeconds, 0);
         
         
         ArenaPopTo(&Memory.TempArena, 0);
