@@ -1,7 +1,7 @@
 # My Toy Renderer
 Everyone's got one...
 
-This is a little showcase to learn PBR shading and modern OpenGL.
+This is a little showcase for me to learn PBR shading and modern OpenGL.
 
 Some Features Include
 + PBR Lighting
